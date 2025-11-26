@@ -8,13 +8,17 @@ BSLZ4_BUILD_DIR = ./bslz4/build
 BSLZ4_INC_DIR = $(BSLZ4_SRC_DIR)
 
 CC=h5cc
+# -shlib tells h5cc to link against shared HDF5 libs, which is what we want for both plugin and exe
 CFLAGS=-DH5_USE_110_API -Wall -g -O2 -fpic -I$(INC_DIR) -I$(BSLZ4_INC_DIR) -std=c99 -shlib
+
+.PHONY: all
+all: plugin benchmark example test_plugin
 
 .PHONY: plugin
 plugin: $(BUILD_DIR)/durin-plugin.so
 
-.PHONY: all
-all: plugin example test_plugin
+.PHONY: benchmark
+benchmark: $(BUILD_DIR)/benchmark
 
 .PHONY: example
 example: $(BUILD_DIR)/example
@@ -42,7 +46,12 @@ $(BSLZ4_BUILD_DIR)/bitshuffle_core.o $(BSLZ4_BUILD_DIR)/iochain.o
 $(BUILD_DIR)/durin-plugin.so: $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o \
 $(BUILD_DIR)/bslz4.a
 	mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -shared -noshlib $^ -o $(BUILD_DIR)/durin-plugin.so
+	$(CC) $(CFLAGS) -shared $^ -o $(BUILD_DIR)/durin-plugin.so
+
+# --- NEW BENCHMARK TARGET ---
+$(BUILD_DIR)/benchmark: $(SRC_DIR)/benchmark.c $(BUILD_DIR)/file.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a
+	mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) $< $(BUILD_DIR)/file.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a -o $@
 
 $(BUILD_DIR)/example: $(BUILD_DIR)/test.o $(BUILD_DIR)/file.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o \
 $(BUILD_DIR)/bslz4.a
@@ -51,5 +60,5 @@ $(BUILD_DIR)/bslz4.a
 
 .PHONY: clean
 clean:
-	rm -r $(BUILD_DIR)
-	rm -r $(BSLZ4_BUILD_DIR)
+	rm -rf $(BUILD_DIR)
+	rm -rf $(BSLZ4_BUILD_DIR)
