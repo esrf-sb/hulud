@@ -26,14 +26,12 @@ int main(int argc, char **argv) {
     void *buffer = NULL;
     int err = 0;
     
-    // 1. Initialize Error Handling
     init_error_handling();
     if (init_h5_error_handling() < 0) {
         fprintf(stderr, "Failed to init HDF5 error handling\n");
         return -1;
     }
 
-    // 2. Open File
     printf("Opening %s...\n", filename);
     fid = H5Fopen(filename, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (fid < 0) {
@@ -89,14 +87,12 @@ int main(int argc, char **argv) {
     double fps = total_frames / total_time;
     double throughput = (total_frames * frame_size_bytes) / (1024.0 * 1024.0 * total_time);
 
-    // 6. Report
     printf("\n--- Results ---\n");
     printf("Time:       %.4f s\n", total_time);
     printf("Frames:     %d\n", total_frames);
     printf("Speed:      %.2f FPS\n", fps);
     printf("Throughput: %.2f MB/s\n", throughput);
 
-    // Cleanup
     free(buffer);
     if (desc->free_desc) desc->free_desc(desc);
     H5Fclose(fid);
