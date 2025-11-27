@@ -4,6 +4,7 @@ stages:
 variables:
   DEBIAN_FRONTEND: noninteractive
 
+# Use a modern Ubuntu image which has HDF5 1.10+ and GFortran
 image: ubuntu:24.04
 
 before_script:
@@ -13,16 +14,27 @@ before_script:
 integration-test:
   stage: test
   script:
+    # 1. Fix Makefile: Remove custom -shlib flag not supported by standard h5cc
     - sed -i 's/-shlib//g' Makefile
+
+    # 2. Build the C Plugin (creates build/durin-plugin.so)
     - make build/durin-plugin.so
+
+    # 3. Build the Fortran Host (creates build/test_plugin)
     - make test_plugin
 
+    # 4. Create Test Input File (Library Path, Dummy Master File, Frame Range)
     - echo "$PWD/build/durin-plugin.so" > test.inputs
     - echo "dummy_master.h5" >> test.inputs
     - echo "1 5" >> test.inputs
 
-    - ./build/test_plugin < test.inputs || true
-
-    - ./build/test_plugin < test.inputs > test.log 2>&1 || true
+    # 5. Run the Test
+    # We wrap these lines in single quotes to prevent YAML parsing errors with colons/redirections
+    - './build/test_plugin < test.inputs || true'
+    
+    # Run again to capture log and check for success message
+    - './build/test_plugin < test.inputs > test.log 2>&1 || true'
     - cat test.log
-    - grep -q "dll_filename" test.log && echo "Integration: Plugin Loaded Successfully"
+    
+    # Check if the "dll_filename" string appears (indicating plugin load success)
+    - 'grep -q "dll_filename" test.log && echo "Integration: Plugin Loaded Successfully"'
