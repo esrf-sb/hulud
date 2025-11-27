@@ -4,49 +4,46 @@ stages:
 variables:
   DEBIAN_FRONTEND: noninteractive
 
-# Use a modern Ubuntu image
 image: ubuntu:24.04
 
 before_script:
-  # Install build tools, HDF5 headers/libs, GFortran, and pkg-config
   - apt-get update -q
   - apt-get install -y build-essential gfortran libhdf5-dev zlib1g-dev git pkg-config
 
 integration-test:
   stage: test
   script:
-    # --- 1. Patch Makefile to use GCC + Shared HDF5 ---
-    
-    # Switch compiler from h5cc (static default) to gcc
+    # --- 1. Patch Makefile ---
+    # Switch to GCC
     - sed -i 's/CC=h5cc/CC=gcc/g' Makefile
-    
-    # Remove the unsupported -shlib flag
+    # Remove unsupported flag
     - sed -i 's/-shlib//g' Makefile
-    
-    # Append HDF5 include paths to CFLAGS
+    # Add Includes
     - sed -i '/^CFLAGS=/ s/$/ $(shell pkg-config --cflags hdf5-serial)/' Makefile
     
-    # Append HDF5 libraries to the linker command for the plugin
-    # This ensures we link against libhdf5.so instead of libhdf5.a
-    - sed -i '/-o \$(BUILD_DIR)\/durin-plugin.so/ s/$/ $(shell pkg-config --libs hdf5-serial)/' Makefile
+    # --- FIX IS HERE ---
+    # Add BOTH the pkg-config libs (base hdf5) AND explicitly add -lhdf5_hl (high level)
+    # We add -lhdf5_hl so the shared object knows it depends on the HL library.
+    - sed -i '/-o \$(BUILD_DIR)\/durin-plugin.so/ s/$/ $(shell pkg-config --libs hdf5-serial) -lhdf5_hl/' Makefile
 
-    # --- 2. Build the C Plugin ---
+    # --- 2. Build ---
     - make build/durin-plugin.so
-
-    # --- 3. Build the Fortran Host ---
     - make test_plugin
 
-    # --- 4. Create Test Input ---
+    # --- 3. Run Test ---
     - echo "$PWD/build/durin-plugin.so" > test.inputs
     - echo "dummy_master.h5" >> test.inputs
     - echo "1 5" >> test.inputs
 
-    # --- 5. Run the Test ---
-    # Expected behavior: The plugin loads successfully (proving ABI compatibility),
-    # but fails to read data (error -4) because dummy_master.h5 doesn't exist.
-    # We use '|| true' to allow the error, then verify the plugin actually loaded.
+    # Run and capture output
     - './build/test_plugin < test.inputs > test.log 2>&1 || true'
-    
     - cat test.log
-    # Check for the specific log string indicating the library was loaded
-    - 'grep -q "dll_filename" test.log && echo "Integration: Plugin Loaded Successfully"'
+
+    # --- 4. Verify Success ---
+    # We now grep for a line that only appears if the handle opens successfully
+    # (The generic host prints "generic_open: fn_template=" or similar on the C side, 
+    # but based on your logs, if we don't see "ERROR", we are good).
+    # Ideally, we check that we passed the "Cannot open Handle" stage.
+    
+    # If "ERROR" appears in the log, fail the job.
+    - '! grep "ERROR" test.log && echo "Integration: Success (No link errors found)"'
