@@ -13,37 +13,20 @@ before_script:
 integration-test:
   stage: test
   script:
-    # --- 1. Patch Makefile ---
-    # Switch to GCC
+    # Patch Makefile ---
     - sed -i 's/CC=h5cc/CC=gcc/g' Makefile
-    # Remove unsupported flag
     - sed -i 's/-shlib//g' Makefile
-    # Add Includes
     - sed -i '/^CFLAGS=/ s/$/ $(shell pkg-config --cflags hdf5-serial)/' Makefile
-    
-    # --- FIX IS HERE ---
-    # Add BOTH the pkg-config libs (base hdf5) AND explicitly add -lhdf5_hl (high level)
-    # We add -lhdf5_hl so the shared object knows it depends on the HL library.
     - sed -i '/-o \$(BUILD_DIR)\/durin-plugin.so/ s/$/ $(shell pkg-config --libs hdf5-serial) -lhdf5_hl/' Makefile
 
-    # --- 2. Build ---
     - make build/durin-plugin.so
     - make test_plugin
 
-    # --- 3. Run Test ---
     - echo "$PWD/build/durin-plugin.so" > test.inputs
     - echo "dummy_master.h5" >> test.inputs
     - echo "1 5" >> test.inputs
 
-    # Run and capture output
     - './build/test_plugin < test.inputs > test.log 2>&1 || true'
     - cat test.log
 
-    # --- 4. Verify Success ---
-    # We now grep for a line that only appears if the handle opens successfully
-    # (The generic host prints "generic_open: fn_template=" or similar on the C side, 
-    # but based on your logs, if we don't see "ERROR", we are good).
-    # Ideally, we check that we passed the "Cannot open Handle" stage.
-    
-    # If "ERROR" appears in the log, fail the job.
     - '! grep "ERROR" test.log && echo "Integration: Success (No link errors found)"'
