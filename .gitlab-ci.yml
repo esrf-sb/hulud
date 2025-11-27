@@ -4,37 +4,49 @@ stages:
 variables:
   DEBIAN_FRONTEND: noninteractive
 
-# Use a modern Ubuntu image which has HDF5 1.10+ and GFortran
+# Use a modern Ubuntu image
 image: ubuntu:24.04
 
 before_script:
+  # Install build tools, HDF5 headers/libs, GFortran, and pkg-config
   - apt-get update -q
-  - apt-get install -y build-essential gfortran libhdf5-dev zlib1g-dev git
+  - apt-get install -y build-essential gfortran libhdf5-dev zlib1g-dev git pkg-config
 
 integration-test:
   stage: test
   script:
-    # 1. Fix Makefile: Remove custom -shlib flag not supported by standard h5cc
+    # --- 1. Patch Makefile to use GCC + Shared HDF5 ---
+    
+    # Switch compiler from h5cc (static default) to gcc
+    - sed -i 's/CC=h5cc/CC=gcc/g' Makefile
+    
+    # Remove the unsupported -shlib flag
     - sed -i 's/-shlib//g' Makefile
+    
+    # Append HDF5 include paths to CFLAGS
+    - sed -i '/^CFLAGS=/ s/$/ $(shell pkg-config --cflags hdf5-serial)/' Makefile
+    
+    # Append HDF5 libraries to the linker command for the plugin
+    # This ensures we link against libhdf5.so instead of libhdf5.a
+    - sed -i '/-o \$(BUILD_DIR)\/durin-plugin.so/ s/$/ $(shell pkg-config --libs hdf5-serial)/' Makefile
 
-    # 2. Build the C Plugin (creates build/durin-plugin.so)
+    # --- 2. Build the C Plugin ---
     - make build/durin-plugin.so
 
-    # 3. Build the Fortran Host (creates build/test_plugin)
+    # --- 3. Build the Fortran Host ---
     - make test_plugin
 
-    # 4. Create Test Input File (Library Path, Dummy Master File, Frame Range)
+    # --- 4. Create Test Input ---
     - echo "$PWD/build/durin-plugin.so" > test.inputs
     - echo "dummy_master.h5" >> test.inputs
     - echo "1 5" >> test.inputs
 
-    # 5. Run the Test
-    # We wrap these lines in single quotes to prevent YAML parsing errors with colons/redirections
-    - './build/test_plugin < test.inputs || true'
-    
-    # Run again to capture log and check for success message
+    # --- 5. Run the Test ---
+    # Expected behavior: The plugin loads successfully (proving ABI compatibility),
+    # but fails to read data (error -4) because dummy_master.h5 doesn't exist.
+    # We use '|| true' to allow the error, then verify the plugin actually loaded.
     - './build/test_plugin < test.inputs > test.log 2>&1 || true'
-    - cat test.log
     
-    # Check if the "dll_filename" string appears (indicating plugin load success)
+    - cat test.log
+    # Check for the specific log string indicating the library was loaded
     - 'grep -q "dll_filename" test.log && echo "Integration: Plugin Loaded Successfully"'
