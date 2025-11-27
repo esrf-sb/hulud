@@ -1,0 +1,19 @@
+stages:
+  - test
+
+image: ubuntu:24.04
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+
+before_script:
+  - apt-get update -q
+  - apt-get install -y build-essential gfortran libhdf5-dev zlib1g-dev git
+
+unit-tests:
+  stage: test
+  script:
+    - sed -i 's/-shlib//g' Makefile
+    - make test_plugin
+    - echo "Running Fortran Integration Test..."
+    - ./build/test_plugin
