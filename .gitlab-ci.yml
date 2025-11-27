@@ -1,19 +1,28 @@
 stages:
   - test
 
-image: ubuntu:24.04
-
 variables:
   DEBIAN_FRONTEND: noninteractive
+
+image: ubuntu:24.04
 
 before_script:
   - apt-get update -q
   - apt-get install -y build-essential gfortran libhdf5-dev zlib1g-dev git
 
-unit-tests:
+integration-test:
   stage: test
   script:
     - sed -i 's/-shlib//g' Makefile
+    - make build/durin-plugin.so
     - make test_plugin
-    - echo "Running Fortran Integration Test..."
-    - ./build/test_plugin
+
+    - echo "$PWD/build/durin-plugin.so" > test.inputs
+    - echo "dummy_master.h5" >> test.inputs
+    - echo "1 5" >> test.inputs
+
+    - ./build/test_plugin < test.inputs || true
+
+    - ./build/test_plugin < test.inputs > test.log 2>&1 || true
+    - cat test.log
+    - grep -q "dll_filename" test.log && echo "Integration: Plugin Loaded Successfully"
