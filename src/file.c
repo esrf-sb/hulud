@@ -14,6 +14,26 @@
 #include "file.h"
 #include "filters.h"
 
+/* --- GPFS/LIMA2 VDS OPTIMIZATION ---
+ * Static cache to keep the Virtual Dataset (VDS) handle open.
+ * * In Lima2, "data_00001" is a VDS pointing to multiple raw files 
+ * (raw_data_1.h5, raw_data_2.h5, etc.).
+ * * Opening this VDS is expensive on GPFS because HDF5 must stat() 
+ * all the underlying raw files. By caching the handle, we pay this 
+ * cost only once per block, instead of once per frame.
+ */
+static hid_t CACHED_DID = 0; // Stores the open HDF5 Dataset ID
+static char CACHED_DS_NAME[256] = {0}; // Stores the name (e.g., "data_000001")
+
+void reset_dataset_cache() {
+    if (CACHED_DID > 0) {
+        H5Dclose(CACHED_DID);
+        CACHED_DID = 0;
+    }
+    memset(CACHED_DS_NAME, 0, 256);
+}
+/* --- END OPTIMIZATION --- */
+
 void clear_det_visit_objects(struct det_visit_objects_t *objects) {
   if (objects->nxdata) {
     H5Oclose(objects->nxdata);
@@ -39,7 +59,11 @@ void free_eiger_desc(struct ds_desc_t *desc) {
   free_ds_desc(desc);
 }
 
-void free_opt_eiger_desc(struct ds_desc_t *desc) { free_eiger_desc(desc); }
+void free_opt_eiger_desc(struct ds_desc_t *desc) { 
+    // Close the cached handle before destroying the descriptor
+    reset_dataset_cache();
+    free_eiger_desc(desc); 
+}
 
 double scale_from_units(const char *unit_string) {
   if (strcasecmp("m", unit_string) == 0 ||
@@ -188,12 +212,27 @@ int get_frame_from_chunk(const struct ds_desc_t *desc, const char *ds_name,
     ERROR_JUMP(-1, done, message);
   }
 
-  d_id = H5Dopen(desc->data_g_id, ds_name, H5P_DEFAULT);
-  if (d_id < 0) {
-    char message[64];
-    sprintf(message, "Error opening dataset %.32s", ds_name);
-    ERROR_JUMP(-1, done, message);
+  /* --- CACHING LOGIC START --- */
+  /* Check if we already have this dataset open */
+  if (CACHED_DID > 0 && strcmp(ds_name, CACHED_DS_NAME) == 0) {
+      d_id = CACHED_DID;
+  } else {
+      if (CACHED_DID > 0) {
+          H5Dclose(CACHED_DID);
+          CACHED_DID = 0;
+      }
+      
+      d_id = H5Dopen(desc->data_g_id, ds_name, H5P_DEFAULT);
+      if (d_id < 0) {
+        char message[64];
+        sprintf(message, "Error opening dataset %.32s", ds_name);
+        ERROR_JUMP(-1, done, message);
+      }
+
+      CACHED_DID = d_id;
+      strncpy(CACHED_DS_NAME, ds_name, 255);
   }
+  /* --- CACHING LOGIC END --- */
 
   if (H5Dget_chunk_storage_size(d_id, c_offset, &c_bytes) < 0) {
     char message[96];
@@ -246,8 +285,10 @@ int get_frame_from_chunk(const struct ds_desc_t *desc, const char *ds_name,
 done:
   if (c_buffer && (c_buffer != buffer))
     free(c_buffer);
-  if (d_id)
-    H5Dclose(d_id);
+  
+  /* The cache owns it now. */
+  // if (d_id) H5Dclose(d_id); 
+
   return retval;
 }
 
