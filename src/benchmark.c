@@ -74,6 +74,7 @@ int main(int argc, char **argv) {
     
     for (int i = 0; i < total_frames; i++) {
         // This is the core function durin uses to fetch a specific frame
+        //fprintf(stderr,"[DEBUG] plugin_get_data: reading frame %d/%d\n",i, (int)(total_frames - 1));
         err = desc->get_data_frame(desc, i, buffer);
         if (err < 0) {
             fprintf(stderr, "Error reading frame %d\n", i);

@@ -1079,6 +1079,18 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
         ds_prop_func(output);    /* get_nxs_dataset_dims() */
     }
 
+    /* Select correct per-frame reader */
+    if (free_func == &free_opt_eiger_desc) {
+        /* Lima2 master with VDS bypass */
+        output->get_data_frame = &get_virtual_frame;
+    } else if (ds_prop_func == &get_dectris_eiger_dataset_dims) {
+        /* Classic Eiger: data_000001, data_000002, ... */
+        output->get_data_frame = &get_dectris_eiger_frame;
+    } else {
+        /* Plain NXdetector data */
+        output->get_data_frame = &get_nxs_frame;
+    }
+
     /* Common descriptor fields (for both paths where we didn't already set) */
     output->det_g_id  = g_id;
     output->data_g_id = ds_id;
@@ -1122,6 +1134,8 @@ done:
 static int get_virtual_frame(const struct ds_desc_t *d, const int f, void *buf)
 {
     const struct opt_eiger_ds_desc_t *opt = (const void*)d;
+    fprintf(stderr, "[DEBUG] get_virtual_frame: f=%d, n_map_entries=%d\n",
+          f, opt->n_map_entries);
 
     for(int i=0; i<opt->n_map_entries; ++i){
         struct FrameMapEntry *E = &opt->frame_map_entries[i];
