@@ -3,6 +3,7 @@
 #include <hdf5.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -21,7 +22,7 @@ int main(int argc, char **argv) {
     char *filename = argv[1];
     int limit_frames = (argc >= 3) ? atoi(argv[2]) : -1;
 
-    struct ds_desc_t *desc;
+    struct ds_desc_t *desc = NULL;
     hid_t fid = 0;
     void *buffer = NULL;
     int err = 0;
@@ -43,12 +44,19 @@ int main(int argc, char **argv) {
     double t_open_start = get_time();
     err = get_detector_info(fid, &desc);
     double t_open_end = get_time();
-    
-    if (err < 0) {
+    if (err < 0 || !desc) {
         fprintf(stderr, "Error getting detector info\n");
         dump_error_stack(stderr);
+        H5Fclose(fid);
         return -1;
     }
+
+    fprintf(stderr,
+        "[DURIN] benchmark: dims=%llu x %llu x %llu, data_width=%d\n",
+        (unsigned long long)desc->dims[0],
+        (unsigned long long)desc->dims[1],
+        (unsigned long long)desc->dims[2],
+        desc->data_width);
 
     printf("Metadata Read Time: %.4f s\n", t_open_end - t_open_start);
     printf("Dataset: %llu frames, %llu x %llu pixels\n", 
@@ -69,7 +77,9 @@ int main(int argc, char **argv) {
     }
 
     printf("Benchmarking read of %d frames...\n", total_frames);
-    
+    /* simple checksum to force touching the data (verifies real reads) */
+    uint64_t checksum = 0;
+
     double t_start = get_time();
     
     for (int i = 0; i < total_frames; i++) {
@@ -80,6 +90,22 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Error reading frame %d\n", i);
             dump_error_stack(stderr);
             break;
+        }
+
+        /* Accumulate a checksum over the frame to ensure data is actually read */
+        size_t px = desc->dims[1] * desc->dims[2];
+        if (desc->data_width == 2) {
+            uint16_t *p = buffer;
+            for (size_t j = 0; j < px; ++j) checksum += p[j];
+        } else if (desc->data_width == 4) {
+            uint32_t *p = buffer;
+            for (size_t j = 0; j < px; ++j) checksum += p[j];
+        } else if (desc->data_width == 8) {
+            uint64_t *p = buffer;
+            for (size_t j = 0; j < px; ++j) checksum += p[j];
+        } else {
+            uint8_t *p = buffer;
+            for (size_t j = 0; j < px * desc->data_width; ++j) checksum += p[j];
         }
     }
 
@@ -93,6 +119,7 @@ int main(int argc, char **argv) {
     printf("Frames:     %d\n", total_frames);
     printf("Speed:      %.2f FPS\n", fps);
     printf("Throughput: %.2f MB/s\n", throughput);
+    printf("Checksum:   0x%016llx\n", (unsigned long long)checksum);
 
     free(buffer);
     if (desc->free_desc) desc->free_desc(desc);

@@ -240,7 +240,7 @@ int get_frame_from_chunk(const struct ds_desc_t *desc, const char *ds_name,
     char message[64];
     sprintf(message,
             "Require frame selection starts at [n, 0, 0], not [n, %llu, %llu]",
-            frame_idx[1], frame_idx[2]);
+            (unsigned long long)frame_idx[1], (unsigned long long)frame_idx[2]);
     ERROR_JUMP(-1, done, message);
   }
 
@@ -269,13 +269,13 @@ int get_frame_from_chunk(const struct ds_desc_t *desc, const char *ds_name,
   if (H5Dget_chunk_storage_size(d_id, c_offset, &c_bytes) < 0) {
     char message[96];
     sprintf(message, "Error reading chunk size from %.32s for frame %llu",
-            ds_name, frame_idx[0]);
+            ds_name, (unsigned long long)frame_idx[0]);
     ERROR_JUMP(-1, done, message);
   }
   if (c_bytes == 0) {
     char message[96];
     sprintf(message, "Target chunk %llu has zero size for dataset %.32s",
-            frame_idx[0], ds_name);
+            (unsigned long long)frame_idx[0], ds_name);
     ERROR_JUMP(-1, done, message);
   }
 
@@ -287,7 +287,8 @@ int get_frame_from_chunk(const struct ds_desc_t *desc, const char *ds_name,
     char message[128];
     sprintf(message,
             "Error reading chunk %llu from dataset %.32s - size %llu bytes",
-            frame_idx[0], ds_name, c_bytes);
+            (unsigned long long)frame_idx[0], ds_name,
+            (unsigned long long)c_bytes);
     ERROR_JUMP(-1, done, message);
   }
 
@@ -633,6 +634,7 @@ herr_t det_visit_callback(hid_t root_id, const char *name,
   struct det_visit_objects_t *output_data = op_data;
   hid_t g_id;
   herr_t retval = 0;
+  int found_via_nxclass = 0;
   if (info->type != H5O_TYPE_GROUP)
     return 0;
   g_id = H5Oopen(root_id, name, H5P_DEFAULT);
@@ -646,7 +648,7 @@ herr_t det_visit_callback(hid_t root_id, const char *name,
   {
     int str_size = 0;
     void *buffer = NULL;
-    hid_t a_id, t_id, mt_id;
+    hid_t a_id, t_id;
     if (H5Aexists(g_id, "NX_class") <= 0) {
       /* not an error - just close group and allow continuation */
       retval = 0;
@@ -666,6 +668,12 @@ herr_t det_visit_callback(hid_t root_id, const char *name,
     if (t_id < 0) {
       ERROR_JUMP(-1, close_attr, "Error getting datatype");
     }
+
+    /* Skip attributes that are not strings (avoids conversion errors on weird attrs) */
+    if (H5Tget_class(t_id) != H5T_STRING) {
+      goto close_type;
+    }
+
     if (H5Tis_variable_str(t_id) > 0) {
       str_size = -1;
       buffer = malloc(sizeof(char *));
@@ -677,28 +685,14 @@ herr_t det_visit_callback(hid_t root_id, const char *name,
       ERROR_JUMP(-1, close_type, "Error allocating string buffer");
     }
 
-    mt_id = H5Tcopy(H5T_C_S1);
-    if (mt_id < 0) {
-      ERROR_JUMP(-1, free_buffer, "Error creating HDF5 String datatype");
-    }
-    // set the target string type to be one longer than the recorded string
-    // in keeping with the malloc'd buffer - if this is already a null
-    // terminated string then we will just have two nulls, if it is not
-    // then we won't clobber the last char in the buffer with a null in the
-    // H5Aread call
-    if (H5Tset_size(mt_id, str_size == -1 ? H5T_VARIABLE : str_size + 1) < 0) {
-      char message[64];
-      sprintf(message, "Error setting string datatype to size %d", str_size);
-      ERROR_JUMP(-1, close_mtype, message);
-    }
-
-    if (H5Aread(a_id, mt_id, buffer) < 0) {
-      char message[256];
-      sprintf(
-          message,
-          "H5OVisit callback: Error reading NX_class attribute on group %.128s",
-          name);
-      ERROR_JUMP(-1, close_mtype, message);
+    /* Read using the attribute's own type to avoid conversion issues */
+    if (H5Aread(a_id, t_id, buffer) < 0) {
+      /* Some files ship odd NX_class encodings; skip rather than abort traversal */
+      fprintf(stderr,
+              "[DURIN] det_visit_callback: WARNING skipping NX_class on group '%s' (read error)\n",
+              name);
+      retval = 0;
+      goto free_buffer;
     }
 
     /* at least one file has been seen where the NX_class attribute was not null
@@ -708,34 +702,170 @@ herr_t det_visit_callback(hid_t root_id, const char *name,
 
     if (str_size > 0)
       ((char *)buffer)[str_size] = '\0';
+
     /* test for NXdata or NXdetector */
     {
       char *nxclass = str_size > 0 ? (char *)buffer : *((char **)buffer);
+
       if (strcmp("NXdata", nxclass) == 0) {
-        hid_t out_id = H5Gopen(root_id, name, H5P_DEFAULT);
-        output_data->nxdata = out_id;
+        found_via_nxclass = 1;
+        char full_path[256] = {0};
+        ssize_t len = H5Iget_name(g_id, full_path, sizeof(full_path));
+        int is_entry_data = (len >= 0 &&
+                             strncmp(full_path, "/entry/data", 11) == 0);
+        int has_data      = (H5Lexists(g_id, "data", H5P_DEFAULT) > 0) ||
+                            (H5Lexists(g_id, "data_000001", H5P_DEFAULT) > 0);
+
+        fprintf(stderr,
+                "[DURIN] det_visit_callback: found NXdata at name='%s', full='%s'%s\n",
+                name,
+                (len < 0 ? "<unknown>" : full_path),
+                is_entry_data ? " [PREFER /entry/data]" : "");
+
+        /* Strategy:
+         *  - First NXdata encountered is stored.
+         *  - Prefer /entry/data.
+         *  - If neither is /entry/data, prefer one that actually has data/data_000001.
+         */
+        int replace = 0;
+        if (output_data->nxdata <= 0) {
+          replace = 1;
+        } else if (is_entry_data) {
+          replace = 1;
+        } else {
+          char curr_path[256] = {0};
+          ssize_t clen = H5Iget_name(output_data->nxdata,
+                                     curr_path, sizeof(curr_path));
+          int curr_is_entry = (clen >= 0 &&
+                               strncmp(curr_path, "/entry/data", 11) == 0);
+          int curr_has_data = (H5Lexists(output_data->nxdata, "data", H5P_DEFAULT) > 0) ||
+                              (H5Lexists(output_data->nxdata, "data_000001", H5P_DEFAULT) > 0);
+
+          if (!curr_is_entry && has_data && !curr_has_data) {
+            replace = 1;
+          }
+        }
+
+        if (replace) {
+          /* Close previous NXdata if we are replacing it */
+          if (output_data->nxdata > 0) {
+            H5Gclose(output_data->nxdata);
+          }
+
+          hid_t out_id = H5Gopen(root_id, name, H5P_DEFAULT);
+          if (out_id < 0) {
+            fprintf(stderr,
+                    "[DURIN] det_visit_callback: ERROR reopening NXdata group '%s'\n",
+                    name);
+          } else {
+            output_data->nxdata = out_id;
+          }
+        }
+
       } else if (strcmp("NXdetector", nxclass) == 0) {
-        hid_t out_id = H5Gopen(root_id, name, H5P_DEFAULT);
-        output_data->nxdetector = out_id;
+        found_via_nxclass = 1;
+        char full_path[256] = {0};
+        ssize_t len = H5Iget_name(g_id, full_path, sizeof(full_path));
+        int is_instrument_detector =
+            (len >= 0 &&
+             strncmp(full_path, "/entry/instrument/detector", 26) == 0);
+        int has_x_pixel = (H5Lexists(g_id, "x_pixel_size", H5P_DEFAULT) > 0);
+
+        fprintf(stderr,
+                "[DURIN] det_visit_callback: found NXdetector at name='%s', full='%s'\n",
+                name,
+                (len < 0 ? "<unknown>" : full_path));
+
+        /* Prefer /entry/instrument/detector; else first seen.
+         * If neither is preferred, prefer one that exposes x_pixel_size.
+         */
+        int replace = 0;
+        if (output_data->nxdetector <= 0) {
+          replace = 1;
+        } else {
+          char curr_path[256] = {0};
+          ssize_t clen = H5Iget_name(output_data->nxdetector,
+                                     curr_path, sizeof(curr_path));
+          int curr_is_instr =
+              (clen >= 0 &&
+               strncmp(curr_path, "/entry/instrument/detector", 26) == 0);
+          int curr_has_x_pixel =
+              (H5Lexists(output_data->nxdetector,
+                         "x_pixel_size", H5P_DEFAULT) > 0);
+
+          if (is_instrument_detector && !curr_is_instr) {
+            replace = 1;
+          } else if (is_instrument_detector == curr_is_instr &&
+                     has_x_pixel && !curr_has_x_pixel) {
+            replace = 1;
+          }
+        }
+
+        if (replace) {
+          if (output_data->nxdetector > 0) {
+            H5Gclose(output_data->nxdetector);
+          }
+          hid_t out_id = H5Gopen(root_id, name, H5P_DEFAULT);
+          if (out_id < 0) {
+            fprintf(stderr,
+                    "[DURIN] det_visit_callback: ERROR reopening NXdetector group '%s'\n",
+                    name);
+          } else {
+            output_data->nxdetector = out_id;
+          }
+        }
       }
     }
+
+
 
     if (str_size == -1) {
       hsize_t dims[1] = {1};
       hid_t s_id = H5Screate_simple(1, dims, NULL);
       H5Sselect_all(s_id);
-      H5Dvlen_reclaim(mt_id, s_id, H5P_DEFAULT, buffer);
+      H5Dvlen_reclaim(t_id, s_id, H5P_DEFAULT, buffer);
       H5Sclose(s_id);
     }
 
-  close_mtype:
-    H5Tclose(mt_id);
   free_buffer:
     free(buffer);
   close_type:
     H5Tclose(t_id);
   close_attr:
     H5Aclose(a_id);
+  }
+
+  /* Fallback: if NX_class could not be read, try to detect data groups heuristically */
+  if (!found_via_nxclass) {
+    char full_path[256] = {0};
+    ssize_t len = H5Iget_name(g_id, full_path, sizeof(full_path));
+
+    int has_data000001 = (H5Lexists(g_id, "data_000001", H5P_DEFAULT) > 0);
+    int has_data = (H5Lexists(g_id, "data", H5P_DEFAULT) > 0);
+    int is_entry_data = (len >= 0 && strncmp(full_path, "/entry/data", 11) == 0);
+
+    if (has_data && (is_entry_data || output_data->nxdata <= 0)) {
+      if (output_data->nxdata > 0) {
+        H5Gclose(output_data->nxdata);
+      }
+      hid_t out_id = H5Gopen(root_id, name, H5P_DEFAULT);
+      if (out_id >= 0) {
+        output_data->nxdata = out_id;
+        fprintf(stderr,
+                "[DURIN] det_visit_callback: heuristically treating '%s' as NXdata (full='%s')\n",
+                name, (len < 0 ? "<unknown>" : full_path));
+      }
+    }
+
+    if (output_data->nxdetector <= 0 && has_data000001) {
+      hid_t out_id = H5Gopen(root_id, name, H5P_DEFAULT);
+      if (out_id >= 0) {
+        output_data->nxdetector = out_id;
+        fprintf(stderr,
+                "[DURIN] det_visit_callback: heuristically treating '%s' as NXdetector (full='%s')\n",
+                name, (len < 0 ? "<unknown>" : full_path));
+      }
+    }
   }
 
 close_group:
@@ -856,6 +986,24 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
 
     /* Use NXdetector for pixel properties (x_pixel_size, y_pixel_size, mask) */
     g_id = visit_result->nxdetector;
+    char path[256];
+    ssize_t len;
+
+    if (g_id > 0) {
+        len = H5Iget_name(g_id, path, sizeof(path));
+        fprintf(stderr, "[DURIN] NXdetector group: %s\n",
+                (len < 0) ? "<unknown>" : path);
+    } else {
+        fprintf(stderr, "[DURIN] NXdetector group: <none>\n");
+    }
+
+    if (visit_result->nxdata > 0) {
+        len = H5Iget_name(visit_result->nxdata, path, sizeof(path));
+        fprintf(stderr, "[DURIN] NXdata group: %s\n",
+                (len < 0) ? "<unknown>" : path);
+    } else {
+        fprintf(stderr, "[DURIN] NXdata group: <none>\n");
+    }
 
     /* ---------------- Pixel size ---------------- */
     if (g_id > 0 &&
@@ -889,6 +1037,7 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
         fprintf(stderr, "WARNING: No pixel mask found\n");
     }
 
+
     /* ---------------- Locate DATA ----------------
      * We support both:
      *  - Dectris style:   data_000001 under NXdetector
@@ -900,21 +1049,29 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
 
     /* Case 1: data_000001 / data under NXdetector group */
     if (g_id > 0 && H5Lexists(g_id, "data_000001", H5P_DEFAULT) > 0) {
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: found data_000001 under NXdetector\n");
         ds_id = g_id;
         ds_prop_func = &get_dectris_eiger_dataset_dims;
 
     } else if (g_id > 0 && H5Lexists(g_id, "data", H5P_DEFAULT) > 0) {
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: only 'data' found under NXdetector\n");
         ds_id = g_id;
         ds_prop_func = &get_nxs_dataset_dims;
 
     /* Case 2: data_000001 / data under NXdata group (/entry/data) */
     } else if (visit_result->nxdata &&
                H5Lexists(visit_result->nxdata, "data_000001", H5P_DEFAULT) > 0) {
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: found data_000001 under NXdata\n");
         ds_id = visit_result->nxdata;
         ds_prop_func = &get_dectris_eiger_dataset_dims;
 
     } else if (visit_result->nxdata &&
                H5Lexists(visit_result->nxdata, "data", H5P_DEFAULT) > 0) {
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: only 'data' found under NXdata\n");
         ds_id = visit_result->nxdata;
         ds_prop_func = &get_nxs_dataset_dims;
 
@@ -922,10 +1079,16 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
         ERROR_JUMP(-1, done, "Could not locate DATA dataset");
     }
 
+
+
     /* ===================================================
      *     EIGER / CHUNKED / VDS HANDLING
      * =================================================== */
     if (ds_prop_func == &get_dectris_eiger_dataset_dims) {
+
+
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: Eiger-style datasets detected, inspecting for VDS\n");
 
         struct eiger_ds_desc_t *eiger_desc =
             calloc(1, sizeof(struct eiger_ds_desc_t));
@@ -956,82 +1119,290 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
         if (L == H5D_VIRTUAL)
             H5Pget_virtual_count(p, &mc);
 
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: layout=%d (H5D_VIRTUAL=%d), virtual_count=%zu\n",
+                (int)L, (int)H5D_VIRTUAL, mc);
+
         if (L == H5D_VIRTUAL && mc > 0) {
+            fprintf(stderr,
+                      "[DURIN] VDS master detected: using VDS bypass\n");
             /* ---------------- VDS PATH: build explicit mapping, bypass VDS ---------------- */
             free(eiger_desc);
 
             *(struct opt_eiger_ds_desc_t **)desc = opt;
             free_func = &free_opt_eiger_desc;
 
-            opt->is_virtual     = 1;
-            opt->n_map_entries  = (int)mc;
+            opt->is_virtual = 1;
+
+            /* Close initial handles; we'll reopen per block */
+            H5Pclose(p); p = -1;
+            H5Dclose(d); d = -1;
+
+            /* Discover all data_xxxxx VDS blocks and total mappings */
+            struct VdsBlockInfo {
+                hsize_t frame_offset;
+                hsize_t block_frames;
+                size_t map_count;
+            };
+            struct VdsBlockInfo *blocks = NULL;
+            int n_blocks = 0;
+            size_t total_maps = 0;
+            hsize_t total_frames = 0;
+            hsize_t dims1 = 0, dims2 = 0;
+            char ds_name[16] = {0};
+
+            for (int idx = 0;; idx++) {
+                sprintf(ds_name, "data_%06d", idx + 1);
+                if (H5Lexists(ds_id, ds_name, H5P_DEFAULT) <= 0)
+                    break;
+
+                hid_t dset = H5Dopen2(ds_id, ds_name, H5P_DEFAULT);
+                if (dset < 0) {
+                    free(blocks);
+                    free(opt);
+                    ERROR_JUMP(-1, done, "Could not open VDS data block");
+                }
+                hid_t plist = H5Dget_create_plist(dset);
+                H5D_layout_t layout = H5Pget_layout(plist);
+                size_t maps = 0;
+                if (layout == H5D_VIRTUAL)
+                    H5Pget_virtual_count(plist, &maps);
+                if (layout != H5D_VIRTUAL || maps == 0) {
+                    H5Pclose(plist);
+                    H5Dclose(dset);
+                    free(blocks);
+                    free(opt);
+                    ERROR_JUMP(-1, done, "Expected VDS layout for all data blocks");
+                }
+
+                hid_t space = H5Dget_space(dset);
+                hsize_t block_dims[3] = {0};
+                H5Sget_simple_extent_dims(space, block_dims, NULL);
+                H5Sclose(space);
+
+                if (idx == 0) {
+                    dims1 = block_dims[1];
+                    dims2 = block_dims[2];
+                } else if (dims1 != block_dims[1] || dims2 != block_dims[2]) {
+                    H5Pclose(plist);
+                    H5Dclose(dset);
+                    free(blocks);
+                    free(opt);
+                    ERROR_JUMP(-1, done, "VDS blocks have mismatched spatial dims");
+                }
+
+                struct VdsBlockInfo *tmp =
+                    realloc(blocks, (n_blocks + 1) * sizeof(*blocks));
+                if (!tmp) {
+                    H5Pclose(plist);
+                    H5Dclose(dset);
+                    free(blocks);
+                    free(opt);
+                    ERROR_JUMP(-1, done, "Out of memory building VDS mapping");
+                }
+                blocks = tmp;
+
+                blocks[n_blocks].frame_offset = total_frames;
+                blocks[n_blocks].block_frames = block_dims[0];
+                blocks[n_blocks].map_count    = maps;
+
+                total_frames += block_dims[0];
+                total_maps   += maps;
+                n_blocks++;
+
+                H5Pclose(plist);
+                H5Dclose(dset);
+            }
+
+            if (n_blocks == 0) {
+                free(blocks);
+                free(opt);
+                ERROR_JUMP(-1, done, "No VDS data blocks found");
+            }
+
+            opt->n_map_entries = (int)total_maps;
             opt->frame_map_entries =
-                calloc(mc, sizeof(struct FrameMapEntry));
+                calloc(total_maps, sizeof(struct FrameMapEntry));
             if (!opt->frame_map_entries) {
-                H5Pclose(p);
-                H5Dclose(d);
+                free(blocks);
                 free(opt);
                 ERROR_JUMP(-1, done, "Out of memory building VDS mapping");
             }
 
-            /* Global dims from the VDS itself */
-            hid_t s = H5Dget_space(d);
-            H5Sget_simple_extent_dims(s, opt->base.base.dims, NULL);
-            H5Sclose(s);
+            /* Global dims: sum of frames, shared spatial dims */
+            opt->base.base.dims[0] = total_frames;
+            opt->base.base.dims[1] = dims1;
+            opt->base.base.dims[2] = dims2;
 
-            /* Build one FrameMapEntry per VDS mapping */
-            for (size_t i = 0; i < mc; ++i) {
-                struct FrameMapEntry *E = &opt->frame_map_entries[i];
+            /* Determine directory of the master file for resolving relative VDS paths */
+            char master_path[4096] = {0};
+            char master_dir[4096]  = {0};
+            ssize_t mlen = H5Fget_name(ds_id, master_path, sizeof(master_path));
 
-                /* Source file & dataset */
-                ssize_t fl = H5Pget_virtual_filename(p, i, NULL, 0);
-                E->src_file = calloc(fl + 1, 1);
-                H5Pget_virtual_filename(p, i, E->src_file, fl + 1);
-
-                ssize_t dl = H5Pget_virtual_dsetname(p, i, NULL, 0);
-                E->src_dset = calloc(dl + 1, 1);
-                H5Pget_virtual_dsetname(p, i, E->src_dset, dl + 1);
-
-                /* Virtual and source hyperslab bounds */
-                hid_t vsp = H5Pget_virtual_vspace(p, i);
-                hid_t ssp = H5Pget_virtual_srcspace(p, i);
-
-                hsize_t v0[3], v1[3], s0[3], s1[3];
-                H5Sget_select_bounds(vsp, v0, v1);
-                H5Sget_select_bounds(ssp, s0, s1);
-                H5Sclose(vsp);
-                H5Sclose(ssp);
-
-                E->vds_start = v0[0];
-                E->vds_end   = v1[0];
-                E->src_start = s0[0];
-                E->src_end   = s1[0];
-
-                /* Open source file + dataset once, reuse later */
-                E->src_file_id = H5Fopen(E->src_file,
-                                         H5F_ACC_RDONLY, H5P_DEFAULT);
-                E->src_dset_id = H5Dopen2(E->src_file_id,
-                                          E->src_dset, H5P_DEFAULT);
-
-                /* Detect bitshuffle-LZ4 on the source dataset (if any) */
-                hid_t sp = H5Dget_create_plist(E->src_dset_id);
-                int nf = H5Pget_nfilters(sp);
-                if (nf == 0) {
-                    E->direct_read = 1;
+            if (mlen > 0) {
+                strncpy(master_dir, master_path, sizeof(master_dir) - 1);
+                master_dir[sizeof(master_dir) - 1] = '\0';
+                char *slash = strrchr(master_dir, '/');
+                if (slash) {
+                    *slash = '\0';
                 } else {
-                    unsigned fcfg, flg;
-                    size_t n = BS_H5_N_PARAMS;
-                    H5Z_filter_t f =
-                        H5Pget_filter2(sp, 0, &flg, &n,
-                                       E->bs_params,
-                                       0, NULL, &fcfg);
-                    if (f == BS_H5_FILTER_ID) {
-                        E->direct_read   = 1;
-                        E->has_bs_filter = 1;
-                    }
+                    master_dir[0] = '\0';
                 }
-                H5Pclose(sp);
+            } else {
+                master_dir[0] = '\0';
             }
+            fprintf(stderr, "[DURIN] master file: '%s', dir: '%s'\n",
+                    master_path, master_dir);
+
+            /* Second pass: build all mapping entries across blocks */
+            size_t out_idx = 0;
+            int data_width_set = 0;
+
+            for (int b = 0; b < n_blocks; ++b) {
+                sprintf(ds_name, "data_%06d", b + 1);
+                hid_t dset = H5Dopen2(ds_id, ds_name, H5P_DEFAULT);
+                hid_t plist = H5Dget_create_plist(dset);
+                size_t maps = blocks[b].map_count;
+
+                for (size_t i = 0; i < maps; ++i, ++out_idx) {
+                    struct FrameMapEntry *E = &opt->frame_map_entries[out_idx];
+
+                    /* Source file & dataset (as stored in VDS) */
+                    ssize_t fl = H5Pget_virtual_filename(plist, i, NULL, 0);
+                    E->src_file = calloc(fl + 1, 1);
+                    H5Pget_virtual_filename(plist, i, E->src_file, fl + 1);
+
+                    ssize_t dl = H5Pget_virtual_dsetname(plist, i, NULL, 0);
+                    E->src_dset = calloc(dl + 1, 1);
+                    H5Pget_virtual_dsetname(plist, i, E->src_dset, dl + 1);
+
+                    /* Virtual and source hyperslab bounds */
+                    hid_t vsp = H5Pget_virtual_vspace(plist, i);
+                    hid_t ssp = H5Pget_virtual_srcspace(plist, i);
+
+                    hsize_t v0[3], v1[3], s0[3], s1[3];
+                    H5Sget_select_bounds(vsp, v0, v1);
+                    H5Sget_select_bounds(ssp, s0, s1);
+                    H5Sclose(vsp);
+                    H5Sclose(ssp);
+
+                    /* Apply block offset to virtual indices */
+                    E->vds_start = blocks[b].frame_offset + v0[0];
+                    E->vds_end   = blocks[b].frame_offset + v1[0];
+                    E->src_start = s0[0];
+                    E->src_end   = s1[0];
+
+                    /* Resolve source file path relative to master file directory if needed */
+                    const char *src_rel = E->src_file;
+                    char *src_full = NULL;
+
+                    if (master_dir[0] != '\0' && src_rel[0] != '/') {
+                        size_t len = strlen(master_dir) + 1 + strlen(src_rel) + 1;
+                        src_full = malloc(len);
+                        if (!src_full) {
+                            H5Pclose(plist);
+                            H5Dclose(dset);
+                            free(blocks);
+                            ERROR_JUMP(-1, done, "Out of memory building full VDS source path");
+                        }
+                        snprintf(src_full, len, "%s/%s", master_dir, src_rel);
+                    } else {
+                        size_t len = strlen(src_rel) + 1;
+                        src_full = malloc(len);
+                        if (src_full) {
+                            memcpy(src_full, src_rel, len);
+                        } else {
+                            H5Pclose(plist);
+                            H5Dclose(dset);
+                            free(blocks);
+                            ERROR_JUMP(-1, done, "Out of memory duplicating VDS source path");
+                        }
+                    }
+
+                    fprintf(stderr,
+                            "[DURIN] VDS mapping[%zu]: src_file='%s' -> '%s', dset='%s', vds=[%llu..%llu]\n",
+                            out_idx, src_rel, src_full, E->src_dset,
+                            (unsigned long long)E->vds_start,
+                            (unsigned long long)E->vds_end);
+
+                    E->src_file_id = H5Fopen(src_full, H5F_ACC_RDONLY, H5P_DEFAULT);
+                    if (E->src_file_id < 0) {
+                        char msg[512];
+                        snprintf(msg, sizeof(msg),
+                                 "Could not open VDS source file '%s'", src_full);
+                        free(src_full);
+                        H5Pclose(plist);
+                        H5Dclose(dset);
+                        free(blocks);
+                        ERROR_JUMP(-1, done, msg);
+                    }
+
+                    /* Replace stored src_file with resolved full path */
+                    free(E->src_file);
+                    E->src_file = src_full;
+
+                    E->src_dset_id = H5Dopen2(E->src_file_id, E->src_dset, H5P_DEFAULT);
+                    if (E->src_dset_id < 0) {
+                        char msg[512];
+                        snprintf(msg, sizeof(msg),
+                                 "Could not open VDS source dataset '%s' in file '%s'",
+                                 E->src_dset, E->src_file);
+                        H5Pclose(plist);
+                        H5Dclose(dset);
+                        free(blocks);
+                        ERROR_JUMP(-1, done, msg);
+                    }
+
+                    /* For the first mapping: get data_width from the source dataset type */
+                    if (!data_width_set) {
+                        hid_t t_id = H5Dget_type(E->src_dset_id);
+                        if (t_id < 0) {
+                            H5Pclose(plist);
+                            H5Dclose(dset);
+                            free(blocks);
+                            ERROR_JUMP(-1, done,
+                                       "Could not get datatype from source VDS dataset");
+                        }
+                        opt->base.base.data_width = H5Tget_size(t_id);
+                        H5Tclose(t_id);
+                        data_width_set = 1;
+
+                        fprintf(stderr,
+                                "[DURIN] VDS bypass: data_width=%d bytes\n",
+                                opt->base.base.data_width);
+                    }
+
+                    /* Detect bitshuffle-LZ4 on the source dataset (if any) */
+                    hid_t sp = H5Dget_create_plist(E->src_dset_id);
+                    H5D_layout_t src_layout = H5Pget_layout(sp);
+                    if (src_layout == H5D_CHUNKED) {
+                        int nf = H5Pget_nfilters(sp);
+                        if (nf == 0) {
+                            E->direct_read = 1;
+                        } else {
+                            unsigned fcfg, flg;
+                            size_t n = BS_H5_N_PARAMS;
+                            H5Z_filter_t f =
+                                H5Pget_filter2(sp, 0, &flg, &n,
+                                               E->bs_params,
+                                               0, NULL, &fcfg);
+                            if (f == BS_H5_FILTER_ID) {
+                                E->direct_read   = 1;
+                                E->has_bs_filter = 1;
+                            }
+                        }
+                    } else {
+                        E->direct_read = 0;
+                        E->has_bs_filter = 0;
+                    }
+                    H5Pclose(sp);
+                }
+
+                H5Pclose(plist);
+                H5Dclose(dset);
+            }
+
+            free(blocks);
 
             /* Sort mappings by vds_start for fast lookup */
             qsort(opt->frame_map_entries,
@@ -1045,6 +1416,9 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
 
         } else {
             /* ---------------- No VDS: original Eiger/chunk behaviour ---------------- */
+            fprintf(stderr,
+                    "[DURIN] Non-VDS Eiger: using classic get_dectris_eiger_frame path\n");
+            
             free(opt);
 
             *(struct eiger_ds_desc_t **)desc = eiger_desc;
@@ -1058,13 +1432,15 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
             ds_prop_func(output);  /* get_dectris_eiger_dataset_dims() */
         }
 
-        H5Pclose(p);
-        H5Dclose(d);
+        if (p > 0) H5Pclose(p);
+        if (d > 0) H5Dclose(d);
 
     } else {
         /* ===================================================
          *     NORMAL NXS DETECTOR (single "data" dataset)
          * =================================================== */
+        fprintf(stderr,
+                "[DURIN] Plain NXdetector: using get_nxs_frame\n");
         *desc = calloc(1, sizeof(struct nxs_ds_desc_t));
         if (!*desc)
             ERROR_JUMP(-1, done, "Out of memory creating nxs_ds_desc_t");
@@ -1097,6 +1473,23 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
     output->get_pixel_properties = pxl_func;
     output->get_pixel_mask       = pxl_mask_func;
     output->free_desc            = free_func;
+
+    /* DEBUG: which per-frame function did we end up with? */
+    if (output->get_data_frame == &get_virtual_frame) {
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: using get_virtual_frame\n");
+    } else if (output->get_data_frame == &get_dectris_eiger_frame) {
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: using get_dectris_eiger_frame\n");
+    } else if (output->get_data_frame == &get_nxs_frame) {
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: using get_nxs_frame\n");
+    } else {
+        fprintf(stderr,
+                "[DURIN] create_dataset_descriptor: UNKNOWN get_data_frame=%p\n",
+                (void *)output->get_data_frame);
+    }
+
 
 done:
     return retval;
@@ -1136,10 +1529,13 @@ static int get_virtual_frame(const struct ds_desc_t *d, const int f, void *buf)
     const struct opt_eiger_ds_desc_t *opt = (const void*)d;
     fprintf(stderr, "[DEBUG] get_virtual_frame: f=%d, n_map_entries=%d\n",
           f, opt->n_map_entries);
+    int found = 0;
+    int retval = -2; /* default: no mapping found */
 
     for(int i=0; i<opt->n_map_entries; ++i){
         struct FrameMapEntry *E = &opt->frame_map_entries[i];
         if(f < E->vds_start || f > E->vds_end) continue;
+        found = 1;
 
         hsize_t li = E->src_start + (f - E->vds_start);
         hsize_t off[3]={li,0,0}, size[3]={1,d->dims[1],d->dims[2]};
@@ -1147,25 +1543,53 @@ static int get_virtual_frame(const struct ds_desc_t *d, const int f, void *buf)
         if(E->direct_read){
             uint32_t mask=0;
             hsize_t sz=0;
-            H5Dget_chunk_storage_size(E->src_dset_id, off, &sz);
+            if (H5Dget_chunk_storage_size(E->src_dset_id, off, &sz) < 0 ||
+                sz == 0) {
+                /* Fallback to regular H5Dread path if chunk info not available */
+                goto regular_read;
+            }
             void *tmp = E->has_bs_filter ? malloc(sz) : buf;
-            H5DOread_chunk(E->src_dset_id, H5P_DEFAULT, off, &mask, tmp);
+            if (!tmp) {
+                ERROR_JUMP(-1, done, "Out of memory for chunk buffer");
+            }
+            if (H5DOread_chunk(E->src_dset_id, H5P_DEFAULT, off, &mask, tmp) < 0) {
+                if (tmp != buf) free(tmp);
+                ERROR_JUMP(-1, done, "H5DOread_chunk failed");
+            }
             if(E->has_bs_filter){
-                bslz4_decompress(E->bs_params, sz,
-                                 tmp, d->data_width*d->dims[1]*d->dims[2],
-                                 buf);
+                int dec = bslz4_decompress(E->bs_params, sz,
+                                           tmp, d->data_width*d->dims[1]*d->dims[2],
+                                           buf);
                 free(tmp);
+                if (dec < 0) {
+                    ERROR_JUMP(-1, done, "Bitshuffle-LZ4 decompress failed");
+                }
             }
             return 0;
         }
 
+regular_read:
         hid_t fs = H5Dget_space(E->src_dset_id);
+        if (fs < 0) ERROR_JUMP(-1, done, "H5Dget_space failed");
         H5Sselect_hyperslab(fs,H5S_SELECT_SET,off,NULL,size,NULL);
         hid_t ms = H5Screate_simple(3,size,NULL);
+        if (ms < 0) {
+            H5Sclose(fs);
+            ERROR_JUMP(-1, done, "H5Screate_simple failed");
+        }
         hid_t t = H5Dget_type(E->src_dset_id);
-        H5Dread(E->src_dset_id,t,ms,fs,H5P_DEFAULT,buf);
+        if (t < 0) {
+            H5Sclose(ms); H5Sclose(fs);
+            ERROR_JUMP(-1, done, "H5Dget_type failed");
+        }
+        if (H5Dread(E->src_dset_id,t,ms,fs,H5P_DEFAULT,buf) < 0) {
+            H5Tclose(t); H5Sclose(ms); H5Sclose(fs);
+            ERROR_JUMP(-1, done, "H5Dread failed");
+        }
         H5Tclose(t); H5Sclose(ms); H5Sclose(fs);
         return 0;
     }
-    return -1;
+    retval = found ? -1 : -2;
+done:
+    return retval;
 }
