@@ -1220,9 +1220,11 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
                 ERROR_JUMP(-1, done, "No VDS data blocks found");
             }
 
-            opt->n_map_entries = (int)total_maps;
+            /* Start with capacity based on outer mappings; will grow if nested VDS expands */
+            size_t used = 0;
+            size_t capacity = total_maps ? total_maps : 1;
             opt->frame_map_entries =
-                calloc(total_maps, sizeof(struct FrameMapEntry));
+                calloc(capacity, sizeof(struct FrameMapEntry));
             if (!opt->frame_map_entries) {
                 free(blocks);
                 free(opt);
@@ -1255,7 +1257,6 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
                     master_path, master_dir);
 
             /* Second pass: build all mapping entries across blocks */
-            size_t out_idx = 0;
             int data_width_set = 0;
 
             for (int b = 0; b < n_blocks; ++b) {
@@ -1264,17 +1265,30 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
                 hid_t plist = H5Dget_create_plist(dset);
                 size_t maps = blocks[b].map_count;
 
-                for (size_t i = 0; i < maps; ++i, ++out_idx) {
-                    struct FrameMapEntry *E = &opt->frame_map_entries[out_idx];
+                for (size_t i = 0; i < maps; ++i) {
+                    /* Ensure capacity for at least one entry */
+                    if (used >= capacity) {
+                        capacity = capacity * 2 + 1;
+                        struct FrameMapEntry *tmp =
+                            realloc(opt->frame_map_entries,
+                                    capacity * sizeof(struct FrameMapEntry));
+                        if (!tmp) {
+                            H5Pclose(plist);
+                            H5Dclose(dset);
+                            free(blocks);
+                            ERROR_JUMP(-1, done, "Out of memory expanding VDS mappings");
+                        }
+                        opt->frame_map_entries = tmp;
+                    }
 
                     /* Source file & dataset (as stored in VDS) */
                     ssize_t fl = H5Pget_virtual_filename(plist, i, NULL, 0);
-                    E->src_file = calloc(fl + 1, 1);
-                    H5Pget_virtual_filename(plist, i, E->src_file, fl + 1);
+                    char *src_file_rel = calloc(fl + 1, 1);
+                    H5Pget_virtual_filename(plist, i, src_file_rel, fl + 1);
 
                     ssize_t dl = H5Pget_virtual_dsetname(plist, i, NULL, 0);
-                    E->src_dset = calloc(dl + 1, 1);
-                    H5Pget_virtual_dsetname(plist, i, E->src_dset, dl + 1);
+                    char *src_dset_name = calloc(dl + 1, 1);
+                    H5Pget_virtual_dsetname(plist, i, src_dset_name, dl + 1);
 
                     /* Virtual and source hyperslab bounds */
                     hid_t vsp = H5Pget_virtual_vspace(plist, i);
@@ -1286,123 +1300,387 @@ int create_dataset_descriptor(struct ds_desc_t **desc,
                     H5Sclose(vsp);
                     H5Sclose(ssp);
 
-                    /* Apply block offset to virtual indices */
-                    E->vds_start = blocks[b].frame_offset + v0[0];
-                    E->vds_end   = blocks[b].frame_offset + v1[0];
-                    E->src_start = s0[0];
-                    E->src_end   = s1[0];
-
-                    /* Resolve source file path relative to master file directory if needed */
-                    const char *src_rel = E->src_file;
+                    /* Resolve source file path relative to master_dir */
                     char *src_full = NULL;
-
-                    if (master_dir[0] != '\0' && src_rel[0] != '/') {
-                        size_t len = strlen(master_dir) + 1 + strlen(src_rel) + 1;
+                    if (master_dir[0] != '\0' && src_file_rel[0] != '/') {
+                        size_t len = strlen(master_dir) + 1 + strlen(src_file_rel) + 1;
                         src_full = malloc(len);
-                        if (!src_full) {
-                            H5Pclose(plist);
-                            H5Dclose(dset);
-                            free(blocks);
-                            ERROR_JUMP(-1, done, "Out of memory building full VDS source path");
-                        }
-                        snprintf(src_full, len, "%s/%s", master_dir, src_rel);
+                        snprintf(src_full, len, "%s/%s", master_dir, src_file_rel);
                     } else {
-                        size_t len = strlen(src_rel) + 1;
+                        size_t len = strlen(src_file_rel) + 1;
                         src_full = malloc(len);
-                        if (src_full) {
-                            memcpy(src_full, src_rel, len);
-                        } else {
-                            H5Pclose(plist);
-                            H5Dclose(dset);
-                            free(blocks);
-                            ERROR_JUMP(-1, done, "Out of memory duplicating VDS source path");
-                        }
+                        if (src_full) memcpy(src_full, src_file_rel, len);
+                    }
+                    if (!src_full) {
+                        free(src_file_rel); free(src_dset_name);
+                        H5Pclose(plist); H5Dclose(dset); free(blocks);
+                        ERROR_JUMP(-1, done, "Out of memory building VDS source path");
                     }
 
                     fprintf(stderr,
                             "[DURIN] VDS mapping[%zu]: src_file='%s' -> '%s', dset='%s', vds=[%llu..%llu]\n",
-                            out_idx, src_rel, src_full, E->src_dset,
-                            (unsigned long long)E->vds_start,
-                            (unsigned long long)E->vds_end);
+                            used, src_file_rel, src_full, src_dset_name,
+                            (unsigned long long)(blocks[b].frame_offset + v0[0]),
+                            (unsigned long long)(blocks[b].frame_offset + v1[0]));
 
-                    E->src_file_id = H5Fopen(src_full, H5F_ACC_RDONLY, H5P_DEFAULT);
-                    if (E->src_file_id < 0) {
+                    hid_t src_f = H5Fopen(src_full, H5F_ACC_RDONLY, H5P_DEFAULT);
+                    if (src_f < 0) {
                         char msg[512];
                         snprintf(msg, sizeof(msg),
                                  "Could not open VDS source file '%s'", src_full);
-                        free(src_full);
-                        H5Pclose(plist);
-                        H5Dclose(dset);
-                        free(blocks);
+                        free(src_full); free(src_file_rel); free(src_dset_name);
+                        H5Pclose(plist); H5Dclose(dset); free(blocks);
                         ERROR_JUMP(-1, done, msg);
                     }
-
-                    /* Replace stored src_file with resolved full path */
-                    free(E->src_file);
-                    E->src_file = src_full;
-
-                    E->src_dset_id = H5Dopen2(E->src_file_id, E->src_dset, H5P_DEFAULT);
-                    if (E->src_dset_id < 0) {
+                    hid_t src_d = H5Dopen2(src_f, src_dset_name, H5P_DEFAULT);
+                    if (src_d < 0) {
                         char msg[512];
                         snprintf(msg, sizeof(msg),
                                  "Could not open VDS source dataset '%s' in file '%s'",
-                                 E->src_dset, E->src_file);
-                        H5Pclose(plist);
-                        H5Dclose(dset);
-                        free(blocks);
+                                 src_dset_name, src_full);
+                        H5Fclose(src_f);
+                        free(src_full); free(src_file_rel); free(src_dset_name);
+                        H5Pclose(plist); H5Dclose(dset); free(blocks);
                         ERROR_JUMP(-1, done, msg);
                     }
+
+                    hid_t sp = H5Dget_create_plist(src_d);
+                    H5D_layout_t src_layout = H5Pget_layout(sp);
+
+                    if (src_layout == H5D_VIRTUAL) {
+                        /* Expand inner mappings */
+                        size_t inner_mc = 0;
+                        H5Pget_virtual_count(sp, &inner_mc);
+                        if (inner_mc == 0) {
+                            H5Pclose(sp); H5Dclose(src_d); H5Fclose(src_f);
+                            free(src_full); free(src_file_rel); free(src_dset_name);
+                            H5Pclose(plist); H5Dclose(dset); free(blocks);
+                            ERROR_JUMP(-1, done, "Nested VDS has zero mappings");
+                        }
+
+                        for (size_t j = 0; j < inner_mc; ++j) {
+                            if (used >= capacity) {
+                                capacity = capacity * 2 + inner_mc;
+                                struct FrameMapEntry *tmp =
+                                    realloc(opt->frame_map_entries,
+                                            capacity * sizeof(struct FrameMapEntry));
+                                if (!tmp) {
+                                    H5Pclose(sp); H5Dclose(src_d); H5Fclose(src_f);
+                                    free(src_full); free(src_file_rel); free(src_dset_name);
+                                    H5Pclose(plist); H5Dclose(dset); free(blocks);
+                                    ERROR_JUMP(-1, done, "Out of memory expanding nested VDS");
+                                }
+                                opt->frame_map_entries = tmp;
+                            }
+                            struct FrameMapEntry *E = &opt->frame_map_entries[used];
+
+                            ssize_t fl2 = H5Pget_virtual_filename(sp, j, NULL, 0);
+                            char *src2_rel = calloc(fl2 + 1, 1);
+                            H5Pget_virtual_filename(sp, j, src2_rel, fl2 + 1);
+
+                            ssize_t dl2 = H5Pget_virtual_dsetname(sp, j, NULL, 0);
+                            char *dset2 = calloc(dl2 + 1, 1);
+                            H5Pget_virtual_dsetname(sp, j, dset2, dl2 + 1);
+
+                            hid_t vsp2 = H5Pget_virtual_vspace(sp, j);
+                            hid_t ssp2 = H5Pget_virtual_srcspace(sp, j);
+                            hsize_t v0i[3], v1i[3], s0i[3], s1i[3];
+                            H5Sget_select_bounds(vsp2, v0i, v1i);
+                            H5Sget_select_bounds(ssp2, s0i, s1i);
+                            H5Sclose(vsp2);
+                            H5Sclose(ssp2);
+
+                            /* Resolve inner source relative to outer src_full dir or master_dir */
+                            char outer_dir[4096] = {0};
+                            strncpy(outer_dir, src_full, sizeof(outer_dir) - 1);
+                            outer_dir[sizeof(outer_dir) - 1] = '\0';
+                            char *slash_out = strrchr(outer_dir, '/');
+                            if (slash_out) *slash_out = '\0'; else outer_dir[0] = '\0';
+                            const char *base_dir = (outer_dir[0] != '\0') ? outer_dir : master_dir;
+
+                            char *src2_full = NULL;
+                            if (base_dir[0] != '\0' && src2_rel[0] != '/') {
+                                size_t len2 = strlen(base_dir) + 1 + strlen(src2_rel) + 1;
+                                src2_full = malloc(len2);
+                                snprintf(src2_full, len2, "%s/%s", base_dir, src2_rel);
+                            } else {
+                                size_t len2 = strlen(src2_rel) + 1;
+                                src2_full = malloc(len2);
+                                if (src2_full) memcpy(src2_full, src2_rel, len2);
+                            }
+                            if (!src2_full) {
+                                free(src2_rel); free(dset2);
+                                H5Pclose(sp); H5Dclose(src_d); H5Fclose(src_f);
+                                free(src_full); free(src_file_rel); free(src_dset_name);
+                                H5Pclose(plist); H5Dclose(dset); free(blocks);
+                                ERROR_JUMP(-1, done, "Out of memory building nested source path");
+                            }
+
+                            fprintf(stderr,
+                                    "[DURIN] Nested VDS flatten: '%s' -> '%s', dset='%s', vds=[%llu..%llu]\n",
+                                    src2_rel, src2_full, dset2,
+                                    (unsigned long long)(blocks[b].frame_offset + v0[0] + v0i[0]),
+                                    (unsigned long long)(blocks[b].frame_offset + v0[0] + v1i[0]));
+
+                            hid_t f2 = H5Fopen(src2_full, H5F_ACC_RDONLY, H5P_DEFAULT);
+                            if (f2 < 0) {
+                                char msg[512];
+                                snprintf(msg, sizeof(msg),
+                                         "Could not open nested VDS source file '%s'", src2_full);
+                                free(src2_rel); free(dset2); free(src2_full);
+                                H5Pclose(sp); H5Dclose(src_d); H5Fclose(src_f);
+                                free(src_full); free(src_file_rel); free(src_dset_name);
+                                H5Pclose(plist); H5Dclose(dset); free(blocks);
+                                ERROR_JUMP(-1, done, msg);
+                            }
+                            hid_t d2 = H5Dopen2(f2, dset2, H5P_DEFAULT);
+                            if (d2 < 0) {
+                                char msg[512];
+                                snprintf(msg, sizeof(msg),
+                                         "Could not open nested VDS source dataset '%s' in file '%s'",
+                                         dset2, src2_full);
+                                H5Fclose(f2);
+                                free(src2_rel); free(dset2); free(src2_full);
+                                H5Pclose(sp); H5Dclose(src_d); H5Fclose(src_f);
+                                free(src_full); free(src_file_rel); free(src_dset_name);
+                                H5Pclose(plist); H5Dclose(dset); free(blocks);
+                                ERROR_JUMP(-1, done, msg);
+                            }
+
+                            /* Clip to dataset extent */
+                            hsize_t new_v_start = blocks[b].frame_offset + v0[0] + v0i[0];
+                            hsize_t new_v_end   = blocks[b].frame_offset + v0[0] + v1i[0];
+                            hsize_t new_s_start = s0i[0];
+                            hsize_t new_s_end   = s1i[0];
+
+                            if (new_v_start >= opt->base.base.dims[0]) {
+                                /* This inner mapping lies beyond target extent */
+                                H5Dclose(d2); H5Fclose(f2);
+                                free(src2_rel); free(dset2); free(src2_full);
+                                continue;
+                            }
+                            if (new_v_end >= opt->base.base.dims[0]) {
+                                hsize_t overlap = opt->base.base.dims[0] - 1 - new_v_start;
+                                new_v_end = opt->base.base.dims[0] - 1;
+                                new_s_end = new_s_start + overlap;
+                            }
+
+                            /* Clamp to source and target extents */
+                            hsize_t src_dims[3] = {0,0,0};
+                            {
+                                hid_t spc = H5Dget_space(d2);
+                                H5Sget_simple_extent_dims(spc, src_dims, NULL);
+                                H5Sclose(spc);
+                            }
+                            hsize_t max_len_v = (new_v_end >= new_v_start) ? (new_v_end - new_v_start + 1) : 0;
+                            hsize_t max_len_s = (new_s_end >= new_s_start) ? (new_s_end - new_s_start + 1) : 0;
+                            hsize_t max_len_src = (src_dims[0] > new_s_start) ? (src_dims[0] - new_s_start) : 0;
+                            hsize_t max_len_dst = (opt->base.base.dims[0] > new_v_start) ? (opt->base.base.dims[0] - new_v_start) : 0;
+                            hsize_t span = max_len_v;
+                            if (max_len_s < span) span = max_len_s;
+                            if (max_len_src < span) span = max_len_src;
+                            if (max_len_dst < span) span = max_len_dst;
+                            if (span == 0) {
+                                H5Dclose(d2); H5Fclose(f2);
+                                free(src2_rel); free(dset2); free(src2_full);
+                                continue;
+                            }
+
+                            E->vds_start = new_v_start;
+                            E->vds_end   = new_v_start + span - 1;
+                            E->src_start = new_s_start;
+                            E->src_end   = new_s_start + span - 1;
+                           E->src_file = src2_full;
+                           E->src_dset = dset2;
+                           E->src_file_id = f2;
+                           E->src_dset_id = d2;
+
+                            fprintf(stderr,
+                                    "[DEBUG] mapping[%zu]: final vds=[%llu..%llu], src=[%llu..%llu], file='%s'\n",
+                                    used,
+                                    (unsigned long long)E->vds_start,
+                                    (unsigned long long)E->vds_end,
+                                    (unsigned long long)E->src_start,
+                                    (unsigned long long)E->src_end,
+                                    src2_full);
+
+                            hid_t sp2 = H5Dget_create_plist(E->src_dset_id);
+                            H5D_layout_t lay2 = H5Pget_layout(sp2);
+                            hsize_t chunk_dims[3] = {0,0,0};
+                            if (lay2 == H5D_CHUNKED) H5Pget_chunk(sp2, 3, chunk_dims);
+
+                            if (lay2 == H5D_CHUNKED) {
+                                int nf = H5Pget_nfilters(sp2);
+                                if (nf == 0) {
+                                    E->direct_read = 1;
+                                } else {
+                                    unsigned fcfg, flg;
+                                    size_t n = BS_H5_N_PARAMS;
+                                    H5Z_filter_t f =
+                                        H5Pget_filter2(sp2, 0, &flg, &n,
+                                                       E->bs_params,
+                                                       0, NULL, &fcfg);
+                                    if (f == BS_H5_FILTER_ID) {
+                                        E->direct_read   = 1;
+                                        E->has_bs_filter = 1;
+                                    }
+                                }
+                            }
+                            fprintf(stderr,
+                                    "[DEBUG] mapping[%zu]: src_layout=%d, chunk=[%llu,%llu,%llu], direct_read=%d, has_bs=%d\n",
+                                    used, (int)lay2,
+                                    (unsigned long long)chunk_dims[0],
+                                    (unsigned long long)chunk_dims[1],
+                                    (unsigned long long)chunk_dims[2],
+                                    E->direct_read, E->has_bs_filter);
+                            H5Pclose(sp2);
+
+                            /* Set data_width once */
+                            if (!data_width_set) {
+                                hid_t t_id = H5Dget_type(E->src_dset_id);
+                                opt->base.base.data_width = H5Tget_size(t_id);
+                                H5Tclose(t_id);
+                                data_width_set = 1;
+                                fprintf(stderr, "[DURIN] VDS bypass: data_width=%d bytes\n",
+                                        opt->base.base.data_width);
+                            }
+
+                            used++;
+                            free(src2_rel);
+                        }
+
+                        /* Close outer VDS handles */
+                        H5Pclose(sp);
+                        H5Dclose(src_d);
+                        H5Fclose(src_f);
+                        free(src_full); free(src_file_rel); free(src_dset_name);
+                        continue; /* next outer mapping */
+                    }
+
+                    /* Non-nested: fill mapping directly */
+                    struct FrameMapEntry *E = &opt->frame_map_entries[used];
+                    /* Clamp to source and target extents */
+                    hsize_t src_dims[3] = {0,0,0};
+                    {
+                        hid_t spc = H5Dget_space(src_d);
+                        H5Sget_simple_extent_dims(spc, src_dims, NULL);
+                        H5Sclose(spc);
+                    }
+                    hsize_t new_v_start = blocks[b].frame_offset + v0[0];
+                    hsize_t new_v_end   = blocks[b].frame_offset + v1[0];
+                    hsize_t new_s_start = s0[0];
+                    hsize_t new_s_end   = s1[0];
+
+                    if (new_v_start >= opt->base.base.dims[0]) {
+                        H5Pclose(sp); H5Dclose(src_d); H5Fclose(src_f);
+                        free(src_full); free(src_file_rel); free(src_dset_name);
+                        continue;
+                    }
+
+                    hsize_t max_len_v = (new_v_end >= new_v_start) ? (new_v_end - new_v_start + 1) : 0;
+                    hsize_t max_len_s = (new_s_end >= new_s_start) ? (new_s_end - new_s_start + 1) : 0;
+                    hsize_t max_len_src = (src_dims[0] > new_s_start) ? (src_dims[0] - new_s_start) : 0;
+                    hsize_t max_len_dst = (opt->base.base.dims[0] > new_v_start) ? (opt->base.base.dims[0] - new_v_start) : 0;
+                    hsize_t span = max_len_v;
+                    if (max_len_s < span) span = max_len_s;
+                    if (max_len_src < span) span = max_len_src;
+                    if (max_len_dst < span) span = max_len_dst;
+                    if (span == 0) {
+                        H5Pclose(sp); H5Dclose(src_d); H5Fclose(src_f);
+                        free(src_full); free(src_file_rel); free(src_dset_name);
+                        continue;
+                    }
+
+                    struct FrameMapEntry *E2 = &opt->frame_map_entries[used];
+                    E2->vds_start = new_v_start;
+                    E2->vds_end   = new_v_start + span - 1;
+                    E2->src_start = new_s_start;
+                    E2->src_end   = new_s_start + span - 1;
+                    E2->src_file = src_full;
+                    E2->src_dset = src_dset_name;
+                    E2->src_file_id = src_f;
+                    E2->src_dset_id = src_d;
+
+                    fprintf(stderr,
+                            "[DEBUG] mapping[%zu]: final vds=[%llu..%llu], src=[%llu..%llu], file='%s'\n",
+                            used,
+                            (unsigned long long)E2->vds_start,
+                            (unsigned long long)E2->vds_end,
+                            (unsigned long long)E2->src_start,
+                            (unsigned long long)E2->src_end,
+                            src_full);
 
                     /* For the first mapping: get data_width from the source dataset type */
                     if (!data_width_set) {
                         hid_t t_id = H5Dget_type(E->src_dset_id);
-                        if (t_id < 0) {
-                            H5Pclose(plist);
-                            H5Dclose(dset);
-                            free(blocks);
-                            ERROR_JUMP(-1, done,
-                                       "Could not get datatype from source VDS dataset");
-                        }
                         opt->base.base.data_width = H5Tget_size(t_id);
                         H5Tclose(t_id);
                         data_width_set = 1;
-
-                        fprintf(stderr,
-                                "[DURIN] VDS bypass: data_width=%d bytes\n",
+                        fprintf(stderr, "[DURIN] VDS bypass: data_width=%d bytes\n",
                                 opt->base.base.data_width);
                     }
 
-                    /* Detect bitshuffle-LZ4 on the source dataset (if any) */
-                    hid_t sp = H5Dget_create_plist(E->src_dset_id);
-                    H5D_layout_t src_layout = H5Pget_layout(sp);
+                    hsize_t chunk_dims[3] = {0,0,0};
+                    if (src_layout == H5D_CHUNKED)
+                        H5Pget_chunk(sp, 3, chunk_dims);
                     if (src_layout == H5D_CHUNKED) {
                         int nf = H5Pget_nfilters(sp);
                         if (nf == 0) {
-                            E->direct_read = 1;
+                            E2->direct_read = 1;
                         } else {
                             unsigned fcfg, flg;
                             size_t n = BS_H5_N_PARAMS;
                             H5Z_filter_t f =
                                 H5Pget_filter2(sp, 0, &flg, &n,
-                                               E->bs_params,
+                                               E2->bs_params,
                                                0, NULL, &fcfg);
                             if (f == BS_H5_FILTER_ID) {
-                                E->direct_read   = 1;
-                                E->has_bs_filter = 1;
+                                E2->direct_read   = 1;
+                                E2->has_bs_filter = 1;
                             }
                         }
-                    } else {
-                        E->direct_read = 0;
-                        E->has_bs_filter = 0;
                     }
+                    fprintf(stderr,
+                            "[DEBUG] mapping[%zu]: src_layout=%d, chunk=[%llu,%llu,%llu], direct_read=%d, has_bs=%d\n",
+                            used, (int)src_layout,
+                            (unsigned long long)chunk_dims[0],
+                            (unsigned long long)chunk_dims[1],
+                            (unsigned long long)chunk_dims[2],
+                            E2->direct_read, E2->has_bs_filter);
                     H5Pclose(sp);
+                    used++;
+                    free(src_file_rel);
                 }
 
                 H5Pclose(plist);
                 H5Dclose(dset);
             }
 
+            opt->n_map_entries = (int)used;
             free(blocks);
+
+            /* Re-pack mappings sequentially to fill [0 .. dims[0]-1] */
+            qsort(opt->frame_map_entries,
+                  opt->n_map_entries,
+                  sizeof(struct FrameMapEntry),
+                  compare_frame_map);
+
+            size_t keep = 0;
+            hsize_t next_v = 0;
+            for (int idx = 0; idx < opt->n_map_entries && next_v < opt->base.base.dims[0]; ++idx) {
+                struct FrameMapEntry *E = &opt->frame_map_entries[idx];
+                hsize_t span = (E->src_end >= E->src_start) ? (E->src_end - E->src_start + 1) : 0;
+                if (span == 0) continue;
+                if (next_v + span > opt->base.base.dims[0]) {
+                    span = opt->base.base.dims[0] - next_v;
+                }
+                E->vds_start = next_v;
+                E->vds_end   = next_v + span - 1;
+                E->src_end   = E->src_start + span - 1;
+                opt->frame_map_entries[keep++] = *E;
+                next_v += span;
+            }
+            opt->n_map_entries = (int)keep;
 
             /* Sort mappings by vds_start for fast lookup */
             qsort(opt->frame_map_entries,
@@ -1531,6 +1809,7 @@ static int get_virtual_frame(const struct ds_desc_t *d, const int f, void *buf)
           f, opt->n_map_entries);
     int found = 0;
     int retval = -2; /* default: no mapping found */
+    int used_fallback = 0;
 
     for(int i=0; i<opt->n_map_entries; ++i){
         struct FrameMapEntry *E = &opt->frame_map_entries[i];
@@ -1545,9 +1824,19 @@ static int get_virtual_frame(const struct ds_desc_t *d, const int f, void *buf)
             hsize_t sz=0;
             if (H5Dget_chunk_storage_size(E->src_dset_id, off, &sz) < 0 ||
                 sz == 0) {
-                /* Fallback to regular H5Dread path if chunk info not available */
-                goto regular_read;
+                /* Try alternative API to get chunk size/filter mask */
+                haddr_t addr = 0;
+                if (H5Dget_chunk_info_by_coord(E->src_dset_id, off,
+                                               &mask, &addr, &sz) < 0 ||
+                    sz == 0) {
+                    /* Chunk not allocated or info unavailable: fall back */
+                    used_fallback = 1;
+                    goto regular_read;
+                }
             }
+            fprintf(stderr,
+                    "[DEBUG] get_virtual_frame: direct chunk path (bs=%d, bytes=%llu)\n",
+                    E->has_bs_filter, (unsigned long long)sz);
             void *tmp = E->has_bs_filter ? malloc(sz) : buf;
             if (!tmp) {
                 ERROR_JUMP(-1, done, "Out of memory for chunk buffer");
@@ -1569,6 +1858,11 @@ static int get_virtual_frame(const struct ds_desc_t *d, const int f, void *buf)
         }
 
 regular_read:
+        if (!E->direct_read) {
+            fprintf(stderr, "[DEBUG] get_virtual_frame: direct_read=0 -> H5Dread\n");
+        } else if (used_fallback) {
+            fprintf(stderr, "[DEBUG] get_virtual_frame: fallback to H5Dread\n");
+        }
         hid_t fs = H5Dget_space(E->src_dset_id);
         if (fs < 0) ERROR_JUMP(-1, done, "H5Dget_space failed");
         H5Sselect_hyperslab(fs,H5S_SELECT_SET,off,NULL,size,NULL);
