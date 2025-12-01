@@ -73,6 +73,8 @@ struct opt_eiger_ds_desc_t {
     int n_map_entries;
     struct FrameMapEntry *frame_map_entries;
 };
+/* Per-frame reader from readers.c */
+int get_virtual_frame(const struct ds_desc_t *d, const int f, void *buf);
 int get_detector_info(hid_t file_id, struct ds_desc_t **desc);
 void clear_det_visit_objects(struct det_visit_objects_t *objects);
 int create_dataset_descriptor(struct ds_desc_t **desc,

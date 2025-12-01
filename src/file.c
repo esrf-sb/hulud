@@ -17,6 +17,7 @@
 
 #include "err.h"
 #include "filters.h"
+#include "readers.h"
 
 /* --- CONSTANTS --- */
 #define MAX_PATH_LEN 4096
@@ -33,7 +34,6 @@ static hid_t CACHED_DID = 0;                     // Stores the open HDF5 Dataset
 static char CACHED_DS_NAME[MAX_NAME_LEN] = {0};  // Stores the name (e.g., "data_000001")
 
 /* --- FORWARD DECLARATIONS --- */
-static int get_virtual_frame(const struct ds_desc_t*, const int, void*);
 static int build_vds_mapping(hid_t ds_id, struct opt_eiger_ds_desc_t* opt,
                              struct eiger_ds_desc_t* eiger_desc_to_free);
 
@@ -1153,76 +1153,3 @@ done:
     return retval;
 }
 
-/* --- VDS FRAME READER --- */
-
-static int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
-    const struct opt_eiger_ds_desc_t* opt = (const void*)d;
-    int found = 0;
-    int retval = -2; /* default: no mapping found */
-
-    for (int i = 0; i < opt->n_map_entries; ++i) {
-        struct FrameMapEntry* E = &opt->frame_map_entries[i];
-        if (f < E->vds_start || f > E->vds_end) continue;
-
-        found = 1;
-        hsize_t li = E->src_start + (f - E->vds_start);
-        hsize_t off[3] = {li, 0, 0};
-        hsize_t size[3] = {1, d->dims[1], d->dims[2]};
-
-        if (E->direct_read) {
-            uint32_t mask = 0;
-            hsize_t sz = 0;
-
-            /* Attempt to get chunk info */
-            if (H5Dget_chunk_storage_size(E->src_dset_id, off, &sz) < 0 || sz == 0) {
-                haddr_t addr = 0;
-                if (H5Dget_chunk_info_by_coord(E->src_dset_id, off, &mask, &addr, &sz) < 0 ||
-                    sz == 0) {
-                    /* Chunk not allocated or unavailable, fallback to standard read */
-                    goto regular_read;
-                }
-            }
-
-            void* tmp = E->has_bs_filter ? malloc(sz) : buf;
-            if (!tmp) ERROR_JUMP(-1, done, "Out of memory for chunk buffer");
-
-            if (H5DOread_chunk(E->src_dset_id, H5P_DEFAULT, off, &mask, tmp) < 0) {
-                if (tmp != buf) free(tmp);
-                ERROR_JUMP(-1, done, "H5DOread_chunk failed");
-            }
-
-            if (E->has_bs_filter) {
-                int dec = bslz4_decompress(E->bs_params, sz, tmp,
-                                           d->data_width * d->dims[1] * d->dims[2], buf);
-                free(tmp);
-                if (dec < 0) ERROR_JUMP(-1, done, "Bitshuffle-LZ4 decompress failed");
-            }
-            return 0;
-        }
-
-    regular_read: {
-        hid_t fs = H5Dget_space(E->src_dset_id);
-        if (fs < 0) ERROR_JUMP(-1, done, "H5Dget_space failed");
-
-        H5Sselect_hyperslab(fs, H5S_SELECT_SET, off, NULL, size, NULL);
-        hid_t ms = H5Screate_simple(3, size, NULL);
-        hid_t t = H5Dget_type(E->src_dset_id);
-
-        if (H5Dread(E->src_dset_id, t, ms, fs, H5P_DEFAULT, buf) < 0) {
-            H5Tclose(t);
-            H5Sclose(ms);
-            H5Sclose(fs);
-            ERROR_JUMP(-1, done, "H5Dread failed");
-        }
-
-        H5Tclose(t);
-        H5Sclose(ms);
-        H5Sclose(fs);
-        return 0;
-    }
-    }
-
-    retval = found ? -1 : -2;
-done:
-    return retval;
-}
