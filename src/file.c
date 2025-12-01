@@ -18,11 +18,7 @@
 #include "err.h"
 #include "filters.h"
 #include "readers.h"
-
-/* --- CONSTANTS --- */
-#define MAX_PATH_LEN 4096
-#define MAX_NAME_LEN 256
-#define MAX_MSG_LEN 512
+#include "vds_map.h"
 
 /* --- GPFS/LIMA2 VDS OPTIMIZATION ---
  * Static cache to keep the Virtual Dataset (VDS) handle open.
@@ -33,18 +29,7 @@
 static hid_t CACHED_DID = 0;                     // Stores the open HDF5 Dataset ID
 static char CACHED_DS_NAME[MAX_NAME_LEN] = {0};  // Stores the name (e.g., "data_000001")
 
-/* --- FORWARD DECLARATIONS --- */
-static int build_vds_mapping(hid_t ds_id, struct opt_eiger_ds_desc_t* opt,
-                             struct eiger_ds_desc_t* eiger_desc_to_free);
-
 /* --- HELPER FUNCTIONS --- */
-
-// For sorting mapping entries
-static int compare_frame_map(const void* a, const void* b) {
-    const struct FrameMapEntry* A = a;
-    const struct FrameMapEntry* B = b;
-    return (A->vds_start > B->vds_start) - (A->vds_start < B->vds_start);
-}
 
 void reset_dataset_cache(void) {
     if (CACHED_DID > 0) {
@@ -695,315 +680,12 @@ herr_t det_visit_callback(hid_t root_id, const char* name, const H5O_info_t* inf
         }
     }
 
-close_group:
     if (H5Gclose(g_id) < 0) retval = -1;
 done:
     return retval;
 }
 
 /* --- MAIN FACTORY LOGIC --- */
-
-/**
- * Extracts the heavy logic for building the VDS bypass map.
- * This reads all data_XXXX datasets, checks their VDS mappings, and builds a flat list
- * of source file/dataset locations to read directly.
- */
-static int build_vds_mapping(hid_t ds_id, struct opt_eiger_ds_desc_t* opt,
-                             struct eiger_ds_desc_t* eiger_desc_to_free) {
-    int retval = 0;
-    struct VdsBlockInfo {
-        hsize_t frame_offset;
-        hsize_t block_frames;
-        size_t map_count;
-    }* blocks = NULL;
-    int n_blocks = 0;
-    size_t total_maps = 0;
-    hsize_t total_frames = 0;
-    hsize_t dims1 = 0, dims2 = 0;
-    char ds_name[MAX_NAME_LEN] = {0};
-
-    /* 1. Discovery Phase: Scan data_XXXXXX blocks */
-    for (int idx = 0;; idx++) {
-        snprintf(ds_name, sizeof(ds_name), "data_%06d", idx + 1);
-        if (H5Lexists(ds_id, ds_name, H5P_DEFAULT) <= 0) break;
-
-        hid_t dset = H5Dopen2(ds_id, ds_name, H5P_DEFAULT);
-        if (dset < 0) ERROR_JUMP(-1, done, "Could not open VDS data block");
-
-        hid_t plist = H5Dget_create_plist(dset);
-        H5D_layout_t layout = H5Pget_layout(plist);
-        size_t maps = 0;
-        if (layout == H5D_VIRTUAL) H5Pget_virtual_count(plist, &maps);
-
-        if (layout != H5D_VIRTUAL || maps == 0) {
-            H5Pclose(plist);
-            H5Dclose(dset);
-            ERROR_JUMP(-1, done, "Expected VDS layout for all data blocks");
-        }
-
-        hid_t space = H5Dget_space(dset);
-        hsize_t block_dims[3] = {0};
-        H5Sget_simple_extent_dims(space, block_dims, NULL);
-        H5Sclose(space);
-
-        if (idx == 0) {
-            dims1 = block_dims[1];
-            dims2 = block_dims[2];
-        } else if (dims1 != block_dims[1] || dims2 != block_dims[2]) {
-            H5Pclose(plist);
-            H5Dclose(dset);
-            ERROR_JUMP(-1, done, "VDS blocks have mismatched spatial dims");
-        }
-
-        struct VdsBlockInfo* tmp = realloc(blocks, (n_blocks + 1) * sizeof(*blocks));
-        if (!tmp) {
-            H5Pclose(plist);
-            H5Dclose(dset);
-            ERROR_JUMP(-1, done, "Out of memory building VDS mapping");
-        }
-        blocks = tmp;
-        blocks[n_blocks].frame_offset = total_frames;
-        blocks[n_blocks].block_frames = block_dims[0];
-        blocks[n_blocks].map_count = maps;
-
-        total_frames += block_dims[0];
-        total_maps += maps;
-        n_blocks++;
-
-        H5Pclose(plist);
-        H5Dclose(dset);
-    }
-
-    if (n_blocks == 0) ERROR_JUMP(-1, done, "No VDS data blocks found");
-
-    /* 2. Allocation & Setup */
-    free(eiger_desc_to_free); /* Free the old descriptor now that we are committed to VDS opt */
-
-    size_t used = 0;
-    size_t capacity = total_maps ? total_maps : 1;
-    opt->frame_map_entries = calloc(capacity, sizeof(struct FrameMapEntry));
-    if (!opt->frame_map_entries) ERROR_JUMP(-1, done, "Out of memory");
-
-    opt->base.base.dims[0] = total_frames;
-    opt->base.base.dims[1] = dims1;
-    opt->base.base.dims[2] = dims2;
-    opt->is_virtual = 1;
-
-    char master_path[MAX_PATH_LEN] = {0};
-    char master_dir[MAX_PATH_LEN] = {0};
-    if (H5Fget_name(ds_id, master_path, sizeof(master_path)) > 0) {
-        strncpy(master_dir, master_path, sizeof(master_dir) - 1);
-        char* slash = strrchr(master_dir, '/');
-        if (slash)
-            *slash = '\0';
-        else
-            master_dir[0] = '\0';
-    }
-
-    /* 3. Mapping Construction Phase */
-    int data_width_set = 0;
-
-    for (int b = 0; b < n_blocks; ++b) {
-        snprintf(ds_name, sizeof(ds_name), "data_%06d", b + 1);
-        hid_t dset = H5Dopen2(ds_id, ds_name, H5P_DEFAULT);
-        hid_t plist = H5Dget_create_plist(dset);
-        size_t maps = blocks[b].map_count;
-
-        for (size_t i = 0; i < maps; ++i) {
-            /* Resize check */
-            if (used >= capacity) {
-                capacity = capacity * 2 + 1;
-                struct FrameMapEntry* tmp =
-                    realloc(opt->frame_map_entries, capacity * sizeof(struct FrameMapEntry));
-                if (!tmp) {
-                    H5Pclose(plist);
-                    H5Dclose(dset);
-                    ERROR_JUMP(-1, done, "Out of memory expanding VDS mappings");
-                }
-                opt->frame_map_entries = tmp;
-            }
-
-            ssize_t fl = H5Pget_virtual_filename(plist, i, NULL, 0);
-            char* src_file_rel = calloc(fl + 1, 1);
-            H5Pget_virtual_filename(plist, i, src_file_rel, fl + 1);
-
-            ssize_t dl = H5Pget_virtual_dsetname(plist, i, NULL, 0);
-            char* src_dset_name = calloc(dl + 1, 1);
-            H5Pget_virtual_dsetname(plist, i, src_dset_name, dl + 1);
-
-            hid_t vsp = H5Pget_virtual_vspace(plist, i);
-            hid_t ssp = H5Pget_virtual_srcspace(plist, i);
-            hsize_t v0[3], v1[3], s0[3], s1[3];
-            H5Sget_select_bounds(vsp, v0, v1);
-            H5Sget_select_bounds(ssp, s0, s1);
-            H5Sclose(vsp);
-            H5Sclose(ssp);
-
-            char* src_full = malloc(MAX_PATH_LEN);
-            if (master_dir[0] != '\0' && src_file_rel[0] != '/') {
-                snprintf(src_full, MAX_PATH_LEN, "%s/%s", master_dir, src_file_rel);
-            } else {
-                strncpy(src_full, src_file_rel, MAX_PATH_LEN - 1);
-            }
-
-            hid_t src_f = H5Fopen(src_full, H5F_ACC_RDONLY, H5P_DEFAULT);
-            if (src_f < 0) {
-                fprintf(stderr, "Failed to open source file: %s\n", src_full);
-                free(src_full);
-                free(src_file_rel);
-                free(src_dset_name);
-                H5Pclose(plist);
-                H5Dclose(dset);
-                ERROR_JUMP(-1, done, "VDS source file open failed");
-            }
-
-            hid_t src_d = H5Dopen2(src_f, src_dset_name, H5P_DEFAULT);
-            if (src_d < 0) {
-                H5Fclose(src_f);
-                free(src_full);
-                free(src_file_rel);
-                free(src_dset_name);
-                H5Pclose(plist);
-                H5Dclose(dset);
-                ERROR_JUMP(-1, done, "VDS source dataset open failed");
-            }
-
-            hid_t sp = H5Dget_create_plist(src_d);
-            H5D_layout_t src_layout = H5Pget_layout(sp);
-
-            /* Handle Nested VDS (Recursion one level deep) */
-            if (src_layout == H5D_VIRTUAL) {
-                size_t inner_mc = 0;
-                H5Pget_virtual_count(sp, &inner_mc);
-                for (size_t j = 0; j < inner_mc; ++j) {
-                    /* (Logic omitted for brevity in cleanup but present in original:
-                       Nested VDS flattening logic goes here.
-                       It essentially replicates the outer loop logic for the inner mapping.
-                       See original code for the nested loop detail.
-                       For this cleanup, we assume the original logic handles this complexity.) */
-                    /* Note: In a real refactor, this inner loop should also be extracted or
-                       recursive. To remain strictly feature-compliant without risking logic errors
-                       in complex recursion transformation, we generally keep the flattening logic
-                       logic inline or carefully extracted. For this "cleanup", we will stick to the
-                       provided structure but safer string handling. */
-                }
-                /* NOTE: The original code logic for nested VDS is huge.
-                   For this response, I am keeping the structure of the prompt's `build_vds_mapping`
-                   equivalent to the logic found in the original blob. */
-
-                /* ... [Original Nested Logic would go here] ... */
-                /* Since strictly cleaning up: let's proceed with the Non-Nested case which is
-                 * standard */
-            }
-
-            /* Standard Mapping Logic */
-            {
-                struct FrameMapEntry* E = &opt->frame_map_entries[used];
-
-                hsize_t src_dims[3] = {0};
-                hid_t spc = H5Dget_space(src_d);
-                H5Sget_simple_extent_dims(spc, src_dims, NULL);
-                H5Sclose(spc);
-
-                hsize_t new_v_start = blocks[b].frame_offset + v0[0];
-                hsize_t new_v_end = blocks[b].frame_offset + v1[0];
-                hsize_t new_s_start = s0[0];
-                hsize_t new_s_end = s1[0];
-
-                /* Bounds checking & Clipping (simplified for readability) */
-                hsize_t max_len_v = (new_v_end >= new_v_start) ? (new_v_end - new_v_start + 1) : 0;
-                hsize_t max_len_s = (new_s_end >= new_s_start) ? (new_s_end - new_s_start + 1) : 0;
-                hsize_t span = (max_len_v < max_len_s) ? max_len_v : max_len_s;
-
-                if (span > 0) {
-                    E->vds_start = new_v_start;
-                    E->vds_end = new_v_start + span - 1;
-                    E->src_start = new_s_start;
-                    E->src_end = new_s_start + span - 1;
-                    E->src_file = src_full;      /* Ownership transferred */
-                    E->src_dset = src_dset_name; /* Ownership transferred */
-                    E->src_file_id = src_f;
-                    E->src_dset_id = src_d;
-
-                    /* Data Width (Set once) */
-                    if (!data_width_set) {
-                        hid_t t_id = H5Dget_type(E->src_dset_id);
-                        opt->base.base.data_width = (int)H5Tget_size(t_id);
-                        H5Tclose(t_id);
-                        data_width_set = 1;
-                    }
-
-                    /* Optimization: Direct Chunk Read + Bitshuffle check */
-                    hsize_t chunk_dims[3] = {0};
-                    if (src_layout == H5D_CHUNKED) {
-                        H5Pget_chunk(sp, 3, chunk_dims);
-                        int nf = H5Pget_nfilters(sp);
-                        if (nf == 0) {
-                            E->direct_read = 1;
-                        } else {
-                            unsigned fcfg, flg;
-                            size_t n = BS_H5_N_PARAMS;
-                            H5Z_filter_t f =
-                                H5Pget_filter2(sp, 0, &flg, &n, E->bs_params, 0, NULL, &fcfg);
-                            if (f == BS_H5_FILTER_ID) {
-                                E->direct_read = 1;
-                                E->has_bs_filter = 1;
-                            }
-                        }
-                    }
-                    used++;
-                    src_full = NULL;      /* prevent free */
-                    src_dset_name = NULL; /* prevent free */
-                } else {
-                    /* Span 0, cleanup */
-                    H5Dclose(src_d);
-                    H5Fclose(src_f);
-                    free(src_full);
-                    free(src_dset_name);
-                }
-            }
-
-            H5Pclose(sp);
-            if (src_full) free(src_full);  // If not used
-            free(src_file_rel);
-            if (src_dset_name) free(src_dset_name);
-        }
-        H5Pclose(plist);
-        H5Dclose(dset);
-    }
-
-    opt->n_map_entries = (int)used;
-
-    /* 4. Finalize: Sort & Flatten */
-    qsort(opt->frame_map_entries, opt->n_map_entries, sizeof(struct FrameMapEntry),
-          compare_frame_map);
-
-    /* Gap filling logic (compacting spans) */
-    size_t keep = 0;
-    hsize_t next_v = 0;
-    for (int idx = 0; idx < opt->n_map_entries && next_v < opt->base.base.dims[0]; ++idx) {
-        struct FrameMapEntry* E = &opt->frame_map_entries[idx];
-        hsize_t span = (E->src_end >= E->src_start) ? (E->src_end - E->src_start + 1) : 0;
-        if (span == 0) continue;
-
-        if (next_v + span > opt->base.base.dims[0]) {
-            span = opt->base.base.dims[0] - next_v;
-        }
-        E->vds_start = next_v;
-        E->vds_end = next_v + span - 1;
-        E->src_end = E->src_start + span - 1;
-        opt->frame_map_entries[keep++] = *E;
-        next_v += span;
-    }
-    opt->n_map_entries = (int)keep;
-
-    qsort(opt->frame_map_entries, opt->n_map_entries, sizeof(struct FrameMapEntry),
-          compare_frame_map);
-
-done:
-    free(blocks);
-    return retval;
-}
 
 int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_t* visit_result) {
     int retval = 0;
@@ -1088,8 +770,23 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
         if (L == H5D_VIRTUAL && mc > 0) {
             fprintf(stderr, "[DURIN] VDS detected: using VDS bypass optimization\n");
 
+            char master_dir[MAX_PATH_LEN] = {0};
+            hid_t fid_tmp = H5Iget_file_id(ds_id);
+            if (fid_tmp >= 0) {
+                char master_path[MAX_PATH_LEN] = {0};
+                if (H5Fget_name(fid_tmp, master_path, sizeof(master_path)) > 0) {
+                    snprintf(master_dir, sizeof(master_dir), "%s", master_path);
+                    char* slash = strrchr(master_dir, '/');
+                    if (slash)
+                        *slash = '\0';
+                    else
+                        master_dir[0] = '\0';
+                }
+                H5Fclose(fid_tmp);
+            }
+
             /* Build the optimized map */
-            if (build_vds_mapping(ds_id, opt, eiger_desc) < 0) {
+            if (build_vds_mapping(ds_id, master_dir, opt, eiger_desc) < 0) {
                 free(opt); /* eiger_desc freed inside build_vds_mapping on success, or manual here?
                             */
                            /* In case of failure inside build_vds, we rely on standard cleanup */
@@ -1152,4 +849,3 @@ int get_detector_info(const hid_t fid, struct ds_desc_t** desc) {
 done:
     return retval;
 }
-

@@ -6,7 +6,7 @@
 #ifndef NXS_XDS_ERR_H
 #define NXS_XDS_ERR_H
 
-#include <stdio.h> // Added for FILE definition
+#include <stdio.h>  // Added for FILE definition
 
 #define ERR_MAX_FILENAME_LENGTH 64
 #define ERR_MAX_FUNCNAME_LENGTH 128
@@ -34,17 +34,16 @@
 #define __file__ "unknown"
 #endif
 
-#define ERROR_JUMP(err, target, message)                                       \
-  {                                                                            \
-    push_error_stack(__file__, __func__, __line__, err, message);              \
-    retval = err;                                                              \
-    goto target;                                                               \
-  }
+#define ERROR_JUMP(err, target, message)                              \
+    {                                                                 \
+        push_error_stack(__file__, __func__, __line__, err, message); \
+        retval = err;                                                 \
+        goto target;                                                  \
+    }
 
-void push_error_stack(const char *file, const char *func, int line, int err,
-                      const char *message);
+void push_error_stack(const char* file, const char* func, int line, int err, const char* message);
 
-void dump_error_stack(FILE *out);
+void dump_error_stack(FILE* out);
 
 void reset_error_stack();
 

@@ -57,8 +57,8 @@ int main(int argc, char** argv) {
             (unsigned long long)desc->dims[2], desc->data_width);
 
     printf("Metadata Read Time: %.4f s\n", t_open_end - t_open_start);
-    printf("Dataset: %llu frames, %llu x %llu pixels\n", desc->dims[0], desc->dims[1],
-           desc->dims[2]);
+    printf("Dataset: %llu frames, %llu x %llu pixels\n", (unsigned long long)desc->dims[0],
+           (unsigned long long)desc->dims[1], (unsigned long long)desc->dims[2]);
 
     // 4. Allocate Buffer (Single frame buffer)
     size_t frame_size_bytes = desc->dims[1] * desc->dims[2] * desc->data_width;
