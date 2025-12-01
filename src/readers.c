@@ -25,30 +25,44 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
         if (E->direct_read) {
             uint32_t mask = 0;
             hsize_t sz = 0;
-            if (H5Dget_chunk_storage_size(E->src_dset_id, off, &sz) < 0 || sz == 0) {
-                /* Try alternative API to get chunk size/filter mask */
+            if (E->chunk_info_valid && E->cached_chunk_index == li) {
+                sz = E->cached_chunk_bytes;
+                mask = E->cached_chunk_mask;
+            } else {
                 haddr_t addr = 0;
                 if (H5Dget_chunk_info_by_coord(E->src_dset_id, off, &mask, &addr, &sz) < 0 ||
                     sz == 0) {
-                    /* Chunk info unavailable: fall back */
-                    used_fallback = 1;
-                    goto regular_read;
+                    if (H5Dget_chunk_storage_size(E->src_dset_id, off, &sz) < 0 || sz == 0) {
+                        /* Chunk info unavailable: fall back */
+                        used_fallback = 1;
+                        goto regular_read;
+                    }
                 }
+                E->cached_chunk_bytes = sz;
+                E->cached_chunk_mask = mask;
+                E->cached_chunk_index = li;
+                E->chunk_info_valid = 1;
             }
             fprintf(stderr, "[DEBUG] get_virtual_frame: direct chunk path (bs=%d, bytes=%llu)\n",
                     E->has_bs_filter, (unsigned long long)sz);
-            void* tmp = E->has_bs_filter ? malloc(sz) : buf;
-            if (!tmp) {
-                ERROR_JUMP(-1, done, "Out of memory for chunk buffer");
+            void* tmp = buf;
+            if (E->has_bs_filter) {
+                if (!E->scratch || E->scratch_size < (size_t)sz) {
+                    void* newbuf = realloc(E->scratch, sz);
+                    if (!newbuf) {
+                        ERROR_JUMP(-1, done, "Out of memory for chunk buffer");
+                    }
+                    E->scratch = newbuf;
+                    E->scratch_size = (size_t)sz;
+                }
+                tmp = E->scratch;
             }
             if (H5DOread_chunk(E->src_dset_id, H5P_DEFAULT, off, &mask, tmp) < 0) {
-                if (tmp != buf) free(tmp);
                 ERROR_JUMP(-1, done, "H5DOread_chunk failed");
             }
             if (E->has_bs_filter) {
                 int dec = bslz4_decompress(E->bs_params, sz, tmp,
                                            d->data_width * d->dims[1] * d->dims[2], buf);
-                free(tmp);
                 if (dec < 0) {
                     ERROR_JUMP(-1, done, "Bitshuffle-LZ4 decompress failed");
                 }

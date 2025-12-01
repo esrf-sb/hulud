@@ -5,8 +5,8 @@
 #include <sys/time.h>
 #include <time.h>
 
-#include "err.h"   // Changed from "src/err.h"
-#include "file.h"  // Changed from "src/file.h"
+#include "err.h"
+#include "plugin.h"
 
 double get_time() {
     struct timeval t;
@@ -23,9 +23,7 @@ int main(int argc, char** argv) {
     char* filename = argv[1];
     int limit_frames = (argc >= 3) ? atoi(argv[2]) : -1;
 
-    struct ds_desc_t* desc = NULL;
-    hid_t fid = 0;
-    void* buffer = NULL;
+    int info[1024] = {0};
     int err = 0;
 
     init_error_handling();
@@ -35,41 +33,40 @@ int main(int argc, char** argv) {
     }
 
     printf("Opening %s...\n", filename);
-    fid = H5Fopen(filename, H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (fid < 0) {
-        fprintf(stderr, "Error opening file\n");
-        return -1;
-    }
-
-    // 3. Get Detector Info (Parses VDS / Master file)
     double t_open_start = get_time();
-    err = get_detector_info(fid, &desc);
+    plugin_open(filename, info, &err);
     double t_open_end = get_time();
-    if (err < 0 || !desc) {
-        fprintf(stderr, "Error getting detector info\n");
+    if (err < 0) {
+        fprintf(stderr, "Error opening file via plugin\n");
         dump_error_stack(stderr);
-        H5Fclose(fid);
         return -1;
     }
 
-    fprintf(stderr, "[DURIN] benchmark: dims=%llu x %llu x %llu, data_width=%d\n",
-            (unsigned long long)desc->dims[0], (unsigned long long)desc->dims[1],
-            (unsigned long long)desc->dims[2], desc->data_width);
+    int nx = 0, ny = 0, nbytes = 0, nframes = 0;
+    float qx = 0, qy = 0;
+    plugin_get_header(&nx, &ny, &nbytes, &qx, &qy, &nframes, info, &err);
+    if (err < 0) {
+        fprintf(stderr, "Error getting header via plugin\n");
+        dump_error_stack(stderr);
+        return -1;
+    }
+
+    fprintf(stderr, "[DURIN] benchmark: dims=%d x %d x %d, data_width=%d\n", nframes, ny, nx,
+            nbytes);
 
     printf("Metadata Read Time: %.4f s\n", t_open_end - t_open_start);
-    printf("Dataset: %llu frames, %llu x %llu pixels\n", (unsigned long long)desc->dims[0],
-           (unsigned long long)desc->dims[1], (unsigned long long)desc->dims[2]);
+    printf("Dataset: %d frames, %d x %d pixels\n", nframes, ny, nx);
 
-    // 4. Allocate Buffer (Single frame buffer)
-    size_t frame_size_bytes = desc->dims[1] * desc->dims[2] * desc->data_width;
-    buffer = malloc(frame_size_bytes);
+    size_t frame_size_bytes = (size_t)nx * (size_t)ny * (size_t)nbytes;
+    size_t frame_px = (size_t)nx * (size_t)ny;
+    int* buffer = malloc(frame_px * sizeof(int));
     if (!buffer) {
-        fprintf(stderr, "Failed to allocate buffer (%lu bytes)\n", frame_size_bytes);
+        fprintf(stderr, "Failed to allocate buffer (%zu ints)\n", frame_px);
         return -1;
     }
 
     // 5. Benchmark Loop
-    int total_frames = desc->dims[0];
+    int total_frames = nframes;
     if (limit_frames > 0 && limit_frames < total_frames) {
         total_frames = limit_frames;
     }
@@ -84,28 +81,16 @@ int main(int argc, char** argv) {
         // This is the core function durin uses to fetch a specific frame
         // fprintf(stderr,"[DEBUG] plugin_get_data: reading frame %d/%d\n",i, (int)(total_frames -
         // 1));
-        err = desc->get_data_frame(desc, i, buffer);
+        int frame_number = i + 1; /* plugin expects 1-based */
+        plugin_get_data(&frame_number, &nx, &ny, buffer, info, &err);
         if (err < 0) {
-            fprintf(stderr, "Error reading frame %d\n", i);
+            fprintf(stderr, "Error reading frame %d via plugin\n", i);
             dump_error_stack(stderr);
             break;
         }
 
         /* Accumulate a checksum over the frame to ensure data is actually read */
-        size_t px = desc->dims[1] * desc->dims[2];
-        if (desc->data_width == 2) {
-            uint16_t* p = buffer;
-            for (size_t j = 0; j < px; ++j) checksum += p[j];
-        } else if (desc->data_width == 4) {
-            uint32_t* p = buffer;
-            for (size_t j = 0; j < px; ++j) checksum += p[j];
-        } else if (desc->data_width == 8) {
-            uint64_t* p = buffer;
-            for (size_t j = 0; j < px; ++j) checksum += p[j];
-        } else {
-            uint8_t* p = buffer;
-            for (size_t j = 0; j < px * desc->data_width; ++j) checksum += p[j];
-        }
+        for (size_t j = 0; j < frame_px; ++j) checksum += buffer[j];
     }
 
     double t_end = get_time();
@@ -121,8 +106,7 @@ int main(int argc, char** argv) {
     printf("Checksum:   0x%016llx\n", (unsigned long long)checksum);
 
     free(buffer);
-    if (desc->free_desc) desc->free_desc(desc);
-    H5Fclose(fid);
+    plugin_close(&err);
 
     return 0;
 }

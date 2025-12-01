@@ -48,6 +48,9 @@
 static hid_t file_id = 0;
 static struct ds_desc_t* data_desc = NULL;
 static int* mask_buffer = NULL;
+static void* tmp_buffer = NULL;
+static size_t tmp_buffer_size = 0;
+static int fast_path = 0; /* optional env flag to skip conversion/mask when safe */
 
 void fill_info_array(int info[1024]) {
     info[0] = DLS_CUSTOMER_ID;
@@ -98,8 +101,10 @@ void plugin_open(const char* filename, int info[1024], int* error_flag) {
 
     init_error_handling();
 
+    /* Best effort: avoid atexit cleanup; ignore failure on some HDF5 builds */
     if (H5dont_atexit() < 0) {
-        ERROR_JUMP(-2, done, "Failed configuring HDF5 library behaviour");
+        fprintf(ERROR_OUTPUT, "[DURIN] WARNING: H5dont_atexit failed, continuing\n");
+        reset_error_stack();
     }
 
     if (init_h5_error_handling() < 0) {
@@ -107,6 +112,8 @@ void plugin_open(const char* filename, int info[1024], int* error_flag) {
     }
 
     fill_info_array(info);
+    const char* fp = getenv("DURIN_PLUGIN_FASTPATH");
+    fast_path = (fp && fp[0] != '0' && fp[0] != '\0');
     file_id = H5Fopen(filename, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file_id < 0) {
         char message[128] = {0};
@@ -149,8 +156,7 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy, int*
     int err = 0;
     int retval = 0;
     double x_pixel_size, y_pixel_size;
-    reset_error_stack();
-    fill_info_array(info);
+    /* avoid per-call overhead; info filled once in plugin_open */
 
     err = data_desc->get_pixel_properties(data_desc, &x_pixel_size, &y_pixel_size);
     if (err < 0) {
@@ -175,17 +181,22 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
                      int* error_flag) {
     int retval = 0;
     int frame_size_px = data_desc->dims[1] * data_desc->dims[2];
-    reset_error_stack();
-    fill_info_array(info);
+    /* These are fixed after open; skip repeated info filling/reset to reduce overhead */
 
     void* buffer = NULL;
-    if (sizeof(*data_array) == data_desc->data_width) {
+    if ((int)sizeof(*data_array) == data_desc->data_width) {
         buffer = data_array;
     } else {
-        buffer = malloc(data_desc->data_width * frame_size_px);
-        if (!buffer) {
-            ERROR_JUMP(-1, done, "Unable to allocate data buffer");
+        size_t needed = (size_t)data_desc->data_width * frame_size_px;
+        if (!tmp_buffer || tmp_buffer_size < needed) {
+            void* nb = realloc(tmp_buffer, needed);
+            if (!nb) {
+                ERROR_JUMP(-1, done, "Unable to allocate data buffer");
+            }
+            tmp_buffer = nb;
+            tmp_buffer_size = needed;
         }
+        buffer = tmp_buffer;
     }
 
     if (data_desc->get_data_frame(data_desc, (*frame_number) - 1, buffer) < 0) {
@@ -194,7 +205,9 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
         ERROR_JUMP(-2, done, message);
     }
 
-    if (buffer != data_array) {
+    if (fast_path && buffer == data_array && mask_buffer == NULL) {
+        /* nothing further to do */
+    } else if (buffer != data_array) {
         if (convert_to_int_and_mask(buffer, data_desc->data_width, data_array, frame_size_px,
                                     mask_buffer) < 0) {
             char message[64];
@@ -210,7 +223,6 @@ done:
     if (retval < 0) {
         dump_error_stack(ERROR_OUTPUT);
     }
-    if (buffer && (buffer != data_array)) free(buffer);
 }
 
 void plugin_close(int* error_flag) {
@@ -225,6 +237,11 @@ void plugin_close(int* error_flag) {
     if (mask_buffer) {
         free(mask_buffer);
         mask_buffer = NULL;
+    }
+    if (tmp_buffer) {
+        free(tmp_buffer);
+        tmp_buffer = NULL;
+        tmp_buffer_size = 0;
     }
     if (data_desc->free_desc) {
         data_desc->free_desc(data_desc);

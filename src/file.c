@@ -105,6 +105,7 @@ void free_opt_eiger_desc(struct ds_desc_t* desc) {
             if (E->src_file_id > 0) H5Fclose(E->src_file_id);
             free(E->src_file);
             free(E->src_dset);
+            free(E->scratch);
         }
         free(opt_desc->frame_map_entries);
     }

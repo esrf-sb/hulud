@@ -35,6 +35,12 @@ struct FrameMapEntry {
     int direct_read;
     int has_bs_filter;
     unsigned int bs_params[BS_H5_N_PARAMS];
+    hsize_t cached_chunk_bytes;
+    uint32_t cached_chunk_mask;
+    int chunk_info_valid;
+    hsize_t cached_chunk_index;
+    void* scratch;
+    size_t scratch_size;
 };
 
 struct det_visit_objects_t;  // Needed by file.c
