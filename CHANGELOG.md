@@ -30,3 +30,6 @@ All notable changes to the Durin VDS project will be documented in this file.
 
 ### Known Issues
 - **Performance:** Read operations on GPFS are slow due to the standard HDF5 library performing repetitive mapping lookups and locking for every frame request.
+
+
+![alt text](performance_comparaison.png)
