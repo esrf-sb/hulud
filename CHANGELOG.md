@@ -11,7 +11,7 @@ All notable changes to the Durin VDS project will be documented in this file.
 - **Performance:** Bypassed the HDF5 Global Lock entirely during the read phase.
 - **Throughput:** Significantly increased read bandwidth on GPFS systems by allowing concurrent access from multiple threads.
 
-## [1.2.0] - 2025-11-20
+## [1.2.0] - 2025-11-28
 ### Added
 - **"Direct Chunk" read path:** Implemented a new reading strategy for VDS datasets.
 
@@ -23,7 +23,7 @@ All notable changes to the Durin VDS project will be documented in this file.
 - **[YANKED]**
 *Internal release. Withdrawn due to instability.*
 
-## [1.0.0] - 2025-10-01
+## [1.0.0] - 2025-11-25
 ### Added
 - Initial implementation of the Durin plugin adapted for Lima2 VDS data.
 - Native support for reading Virtual Datasets (VDS), resolving compatibility issues found in Neggia.
