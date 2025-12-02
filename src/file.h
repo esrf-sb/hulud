@@ -22,6 +22,15 @@ struct ds_desc_t;
 struct eiger_ds_desc_t;
 struct opt_eiger_ds_desc_t;
 
+/* --- NEW: Parallel Index Struct --- */
+/* Stores pre-calculated file location for a single frame to allow lock-free reading */
+struct ParallelFrameIndex {
+    int fd;                  /* OS File Descriptor */
+    long long byte_offset;   /* Byte offset in the file */
+    size_t chunk_size;       /* Compressed size in bytes */
+    unsigned int* bs_params; /* Pointer to compression params (borrowed from MapEntry) */
+};
+
 /* Frame map entry to support VDS bypass */
 struct FrameMapEntry {
     hsize_t vds_start;
@@ -84,9 +93,17 @@ struct opt_eiger_ds_desc_t {
     int is_virtual;
     int n_map_entries;
     struct FrameMapEntry* frame_map_entries;
+
+    /* --- NEW: Pointer to the fast parallel index array --- */
+    struct ParallelFrameIndex* fast_index;
 };
-/* Per-frame reader from readers.c */
+
+/* Function Prototypes */
 int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf);
+/* --- NEW: Prototypes for parallel functions --- */
+int build_parallel_index(struct opt_eiger_ds_desc_t* opt);
+int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf);
+
 int get_detector_info(hid_t file_id, struct ds_desc_t** desc);
 void clear_det_visit_objects(struct det_visit_objects_t* objects);
 int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_t* visit_result);

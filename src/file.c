@@ -17,19 +17,19 @@
 
 #include "err.h"
 #include "filters.h"
-#include "readers.h"
+#include "readers.h" /* REQUIRED for build_parallel_index */
 #include "vds_map.h"
 
-/* --- GPFS/LIMA2 VDS OPTIMIZATION ---
- * Static cache to keep the Virtual Dataset (VDS) handle open.
- * In Lima2, "data_00001" is a VDS pointing to multiple raw files.
- * Opening this VDS is expensive on GPFS because HDF5 must stat() all
- * underlying raw files. We cache the handle to pay this cost once per block.
- */
-static hid_t CACHED_DID = 0;                     // Stores the open HDF5 Dataset ID
-static char CACHED_DS_NAME[MAX_NAME_LEN] = {0};  // Stores the name (e.g., "data_000001")
+/* --- GPFS/LIMA2 VDS OPTIMIZATION --- */
+static hid_t CACHED_DID = 0;
+static char CACHED_DS_NAME[MAX_NAME_LEN] = {0};
 
 /* --- HELPER FUNCTIONS --- */
+
+static int unit_equals(const char* unit, size_t len, const char* target) {
+    size_t target_len = strlen(target);
+    return len == target_len && strncasecmp(unit, target, len) == 0;
+}
 
 void reset_dataset_cache(void) {
     if (CACHED_DID > 0) {
@@ -42,21 +42,31 @@ void reset_dataset_cache(void) {
 double scale_from_units(const char* unit_string) {
     if (!unit_string) return 1.0;
 
-    if (strcasecmp("m", unit_string) == 0 || strcasecmp("metres", unit_string) == 0 ||
-        strcasecmp("meters", unit_string) == 0) {
+    const char* start = unit_string;
+    while (*start && isspace((unsigned char)*start)) start++;
+
+    size_t len = strlen(start);
+    while (len > 0 && isspace((unsigned char)start[len - 1])) len--;
+
+    if (len == 0) return 1.0;
+
+    if (unit_equals(start, len, "m") || unit_equals(start, len, "metres") ||
+        unit_equals(start, len, "meters")) {
         return 1.0;
-    } else if (strcasecmp("cm", unit_string) == 0 || strcasecmp("centimetres", unit_string) == 0 ||
-               strcasecmp("centimeters", unit_string) == 0) {
+    } else if (unit_equals(start, len, "cm") || unit_equals(start, len, "centimetres") ||
+               unit_equals(start, len, "centimeters")) {
         return 0.01;
-    } else if (strcasecmp("mm", unit_string) == 0 || strcasecmp("millimetres", unit_string) == 0 ||
-               strcasecmp("millimeters", unit_string) == 0) {
+    } else if (unit_equals(start, len, "mm") || unit_equals(start, len, "millimetres") ||
+               unit_equals(start, len, "millimeters") || unit_equals(start, len, "millimetre") ||
+               unit_equals(start, len, "millimeter")) {
         return 0.001;
-    } else if (strcasecmp("um", unit_string) == 0 || strcasecmp("microns", unit_string) == 0 ||
-               strcasecmp("micrometres", unit_string) == 0 ||
-               strcasecmp("micrometers", unit_string) == 0) {
-        return 0.000001;
+    } else if (unit_equals(start, len, "um") || unit_equals(start, len, "micron") ||
+               unit_equals(start, len, "microns") || unit_equals(start, len, "micrometre") ||
+               unit_equals(start, len, "micrometres") || unit_equals(start, len, "micrometer") ||
+               unit_equals(start, len, "micrometers") || unit_equals(start, len, "\xC2\xB5m")) {
+        return 1e-6;
     } else {
-        fprintf(stderr, "Unrecognised unit string %s\n", unit_string);
+        fprintf(stderr, "Unrecognised unit string '%.*s'\n", (int)len, start);
         return 1.0;
     }
 }
@@ -96,6 +106,12 @@ void free_opt_eiger_desc(struct ds_desc_t* desc) {
     if (!opt_desc) return;
 
     reset_dataset_cache();
+
+    /* --- NEW: Free Parallel Index --- */
+    if (opt_desc->fast_index) {
+        free(opt_desc->fast_index);
+        opt_desc->fast_index = NULL;
+    }
 
     /* Cleanup VDS mapping resources */
     if (opt_desc->frame_map_entries) {
@@ -276,8 +292,6 @@ int get_frame_from_chunk(const struct ds_desc_t* desc, const char* ds_name,
     }
 
 done:
-    /* Logic in original code implies c_buffer might be allocated if filters were manual,
-     * but here it's just assigned to buffer. Keeping original cleanup check logic. */
     if (c_buffer && (c_buffer != buffer)) free(c_buffer);
     return retval;
 }
@@ -697,17 +711,8 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
     void (*free_func)(struct ds_desc_t*) = NULL;
     struct ds_desc_t* output = NULL;
 
-    /* Use NXdetector for pixel properties */
     g_id = visit_result->nxdetector;
-
-    /* Determine where to read DATA from */
     ds_id = -1;
-
-    /* Strategy:
-       1. Check for data_000001 (Eiger style) in NXdetector
-       2. Check for data (Standard) in NXdetector
-       3. Check for data_000001 in NXdata
-       4. Check for data in NXdata */
 
     if (g_id > 0 && H5Lexists(g_id, "data_000001", H5P_DEFAULT) > 0) {
         ds_id = g_id;
@@ -726,7 +731,6 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
         ERROR_JUMP(-1, done, "Could not locate DATA dataset");
     }
 
-    /* Strategy for Pixel Properties */
     if (g_id > 0 && H5Lexists(g_id, "x_pixel_size", H5P_DEFAULT) > 0) {
         pxl_func = &get_nxs_pixel_info;
     } else if (g_id > 0 && H5Lexists(g_id, "detectorSpecific", H5P_DEFAULT) > 0) {
@@ -735,7 +739,6 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
         ERROR_JUMP(-1, done, "Could not locate x/y pixel_size");
     }
 
-    /* Strategy for Pixel Mask */
     if (g_id > 0 && H5Lexists(g_id, "pixel_mask", H5P_DEFAULT) > 0) {
         pxl_mask_func = &get_nxs_pixel_mask;
     } else if (g_id > 0 && H5Lexists(g_id, "detectorSpecific/pixel_mask", H5P_DEFAULT) > 0) {
@@ -746,7 +749,6 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
 
     /* --- INSTANTIATION --- */
     if (ds_prop_func == &get_dectris_eiger_dataset_dims) {
-        /* Eiger / VDS handling */
         struct eiger_ds_desc_t* eiger_desc = calloc(1, sizeof(struct eiger_ds_desc_t));
         struct opt_eiger_ds_desc_t* opt = calloc(1, sizeof(struct opt_eiger_ds_desc_t));
 
@@ -759,7 +761,6 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
         eiger_desc->frame_func = &get_frame_simple;
         opt->base.frame_func = &get_frame_from_chunk;
 
-        /* Check if VDS optimization is needed */
         hid_t d = H5Dopen2(ds_id, "data_000001", H5P_DEFAULT);
         hid_t p = H5Dget_create_plist(d);
         H5D_layout_t L = H5Pget_layout(p);
@@ -786,18 +787,26 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
                 H5Fclose(fid_tmp);
             }
 
-            /* Build the optimized map */
             if (build_vds_mapping(ds_id, master_dir, opt, eiger_desc) < 0) {
-                free(opt); /* eiger_desc freed inside build_vds_mapping on success, or manual here?
-                            */
-                           /* In case of failure inside build_vds, we rely on standard cleanup */
+                free(opt);
                 ERROR_JUMP(-1, done, "Failed to build VDS mapping");
             }
 
+            /* --- NEW: Attempt to build Parallel Index --- */
+            if (build_parallel_index(opt) == 0) {
+                fprintf(stderr,
+                        "[DURIN] Parallel index built successfully. Using fast parallel path.\n");
+                output = (struct ds_desc_t*)opt;
+                output->get_data_frame = &get_virtual_frame_parallel;
+            } else {
+                fprintf(stderr, "[DURIN] Parallel index failed. Fallback to sequential VDS.\n");
+                output = (struct ds_desc_t*)opt;
+                output->get_data_frame = &get_virtual_frame;
+            }
+            /* -------------------------------------------- */
+
             *(struct opt_eiger_ds_desc_t**)desc = opt;
             free_func = &free_opt_eiger_desc;
-            output = (struct ds_desc_t*)opt;
-            output->get_data_frame = &get_virtual_frame;
         } else {
             /* Standard Eiger */
             free(opt);

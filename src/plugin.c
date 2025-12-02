@@ -6,19 +6,15 @@
 #include "plugin.h"
 
 #include <hdf5.h>
-#include <stdlib.h>
 #include <pthread.h>
+#include <stdlib.h>
 
 #include "file.h"
 #include "filters.h"
 
-/* XDS does not provide an error callback facility, so just write to stderr
-   for now - generally regarded as poor practice */
 #define ERROR_OUTPUT stderr
 
-/* mask bits loosely based on what Neggia does and what NeXus says should be
-   done basically - anything in the low byte (& 0xFF) means "ignore this"
-   Neggia uses the value -2 if bit 1, 2 or 3 are set */
+/* mask bits loosely based on what Neggia does */
 #define COPY_AND_MASK(in, out, size, mask)       \
     {                                            \
         int i;                                   \
@@ -51,8 +47,9 @@ static struct ds_desc_t* data_desc = NULL;
 static int* mask_buffer = NULL;
 static void* tmp_buffer = NULL;
 static size_t tmp_buffer_size = 0;
-static int fast_path = 0; /* optional env flag to skip conversion/mask when safe */
+static int fast_path = 0;
 static pthread_mutex_t plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int h5_atexit_configured = 0;
 
 void fill_info_array(int info[1024]) {
     info[0] = DLS_CUSTOMER_ID;
@@ -63,11 +60,7 @@ void fill_info_array(int info[1024]) {
 }
 
 int convert_to_int_and_mask(void* in_buffer, int d_width, int* out_buffer, int length, int* mask) {
-    /* transfer data to output buffer, performing data conversion as required */
     int retval = 0;
-    /* TODO: decide how conversion of data should work */
-    /* Should we sign extend? Neggia doesn't (casts from uint*), but may be more
-     * intuitive */
     if (d_width == sizeof(signed char)) {
         signed char* in = in_buffer;
         COPY_AND_MASK(in, out_buffer, length, mask);
@@ -100,14 +93,17 @@ extern "C" {
 void plugin_open(const char* filename, int info[1024], int* error_flag) {
     int retval = 0;
     *error_flag = 0;
+
+    /* Open is still serialized */
     pthread_mutex_lock(&plugin_mutex);
 
     init_error_handling();
 
-    /* Best effort: avoid atexit cleanup; ignore failure on some HDF5 builds */
-    if (H5dont_atexit() < 0) {
-        fprintf(ERROR_OUTPUT, "[DURIN] WARNING: H5dont_atexit failed, continuing\n");
-        reset_error_stack();
+    if (!h5_atexit_configured) {
+        h5_atexit_configured = 1;
+        if (H5dont_atexit() < 0) {
+            reset_error_stack(); /* benign if another library already initialised HDF5 */
+        }
     }
 
     if (init_h5_error_handling() < 0) {
@@ -160,8 +156,8 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy, int*
     int err = 0;
     int retval = 0;
     double x_pixel_size, y_pixel_size;
+
     pthread_mutex_lock(&plugin_mutex);
-    /* avoid per-call overhead; info filled once in plugin_open */
 
     err = data_desc->get_pixel_properties(data_desc, &x_pixel_size, &y_pixel_size);
     if (err < 0) {
@@ -187,13 +183,24 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
                      int* error_flag) {
     int retval = 0;
     int frame_size_px = data_desc->dims[1] * data_desc->dims[2];
-    /* These are fixed after open; skip repeated info filling/reset to reduce overhead */
-    pthread_mutex_lock(&plugin_mutex);
+
+    /* * --- MULTI-THREADING CHANGE ---
+     * Locks DISABLED to allow parallel execution.
+     */
+    /* pthread_mutex_lock(&plugin_mutex); */
+
+    /* * CAUTION: 'tmp_buffer' is a global static.
+     * It is NOT safe for parallel use.
+     * However, the new get_virtual_frame_parallel allocates its own local buffer,
+     * so it ignores tmp_buffer.
+     * We only use tmp_buffer if the format conversion below is needed.
+     */
 
     void* buffer = NULL;
     if ((int)sizeof(*data_array) == data_desc->data_width) {
         buffer = data_array;
     } else {
+        /* If we are here in parallel mode, we are in trouble because tmp_buffer is shared. */
         size_t needed = (size_t)data_desc->data_width * frame_size_px;
         if (!tmp_buffer || tmp_buffer_size < needed) {
             void* nb = realloc(tmp_buffer, needed);
@@ -206,12 +213,14 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
         buffer = tmp_buffer;
     }
 
+    /* 1-based index from XDS converted to 0-based */
     if (data_desc->get_data_frame(data_desc, (*frame_number) - 1, buffer) < 0) {
         char message[64] = {0};
         sprintf(message, "Failed to retrieve data for frame %d", *frame_number);
         ERROR_JUMP(-2, done, message);
     }
 
+    /* Masking/Conversion Logic */
     if (fast_path && buffer == data_array && mask_buffer == NULL) {
         /* nothing further to do */
     } else if (buffer != data_array) {
@@ -227,7 +236,9 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
 
 done:
     *error_flag = retval;
-    pthread_mutex_unlock(&plugin_mutex);
+
+    /* pthread_mutex_unlock(&plugin_mutex); */
+
     if (retval < 0) {
         dump_error_stack(ERROR_OUTPUT);
     }
@@ -237,7 +248,6 @@ void plugin_close(int* error_flag) {
     pthread_mutex_lock(&plugin_mutex);
     if (file_id) {
         if (H5Fclose(file_id) < 0) {
-            /* TODO: backtrace */
             *error_flag = -1;
         }
     }

@@ -47,6 +47,7 @@ static void* worker_run(void* arg) {
         int nx = ctx->nx, ny = ctx->ny;
         int local_err = 0;
         plugin_get_data(&fn, &nx, &ny, buffer, ctx->info, &local_err);
+
         if (local_err < 0) {
             ctx->err = local_err;
             break;

@@ -1,15 +1,110 @@
+/* Must be before any includes to enable pread in C99 */
+#define _POSIX_C_SOURCE 200809L
+
+#include <fcntl.h> /* For open() */
 #include <hdf5.h>
 #include <hdf5_hl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h> /* For pread() */
 
 #include "err.h"
 #include "file.h"
 #include "filters.h"
 
+/* ----------------------------------------------------------------------------
+ * NEW: Parallel Index Builder
+ * This iterates over the HDF5 structure ONCE at startup to get all offsets.
+ * ----------------------------------------------------------------------------
+ */
+int build_parallel_index(struct opt_eiger_ds_desc_t* opt) {
+    int total_frames = opt->base.base.dims[0];
+    opt->fast_index = calloc(total_frames, sizeof(struct ParallelFrameIndex));
+    if (!opt->fast_index) return -1;
+
+    for (int i = 0; i < opt->n_map_entries; ++i) {
+        struct FrameMapEntry* E = &opt->frame_map_entries[i];
+
+        /* Open the raw source file directly (OS level) */
+        int fd = open(E->src_file, O_RDONLY);
+        if (fd < 0) {
+            fprintf(stderr, "[DURIN] Failed to open raw file for parallel read: %s\n", E->src_file);
+            /* Cleanup will happen in free_opt_eiger_desc */
+            return -1;
+        }
+
+        hsize_t count = (E->vds_end - E->vds_start) + 1;
+
+        for (hsize_t j = 0; j < count; ++j) {
+            int global_frame = E->vds_start + j;
+            hsize_t source_index = E->src_start + j;
+
+            hsize_t chunk_offset[3] = {source_index, 0, 0};
+            haddr_t byte_addr;
+            hsize_t size;
+            unsigned filter_mask;
+
+            /* Use HDF5 to calculate the file offset */
+            /* H5Dget_chunk_info_by_coord works on 1.10+ */
+            if (H5Dget_chunk_info_by_coord(E->src_dset_id, chunk_offset, &filter_mask, &byte_addr,
+                                           &size) < 0) {
+                fprintf(stderr, "[DURIN] Failed to get chunk info for frame %d\n", global_frame);
+                return -1;
+            }
+
+            /* Store in fast index */
+            opt->fast_index[global_frame].fd = fd;
+            opt->fast_index[global_frame].byte_offset = (long long)byte_addr;
+            opt->fast_index[global_frame].chunk_size = (size_t)size;
+            opt->fast_index[global_frame].bs_params = E->bs_params;
+        }
+    }
+    return 0;
+}
+
+/* ----------------------------------------------------------------------------
+ * NEW: Parallel Reader
+ * Uses pread() and local buffers. No HDF5 calls. Thread-safe.
+ * ----------------------------------------------------------------------------
+ */
+int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf) {
+    const struct opt_eiger_ds_desc_t* opt = (const void*)d;
+
+    /* Bounds check */
+    if (f < 0 || f >= d->dims[0]) return -1;
+
+    struct ParallelFrameIndex* idx = &opt->fast_index[f];
+
+    /* Check if index is valid (fd must be > 0) */
+    if (idx->fd <= 0) return -1;
+
+    /* Allocate LOCAL scratch buffer (Thread Safe) */
+    void* local_scratch = malloc(idx->chunk_size);
+    if (!local_scratch) return -1;
+
+    /* Perform read */
+    ssize_t bytes_read = pread(idx->fd, local_scratch, idx->chunk_size, idx->byte_offset);
+
+    int retval = 0;
+    if (bytes_read != (ssize_t)idx->chunk_size) {
+        retval = -1;
+    } else {
+        /* Decompress */
+        retval = bslz4_decompress(idx->bs_params, idx->chunk_size, local_scratch,
+                                  d->data_width * d->dims[1] * d->dims[2], buf);
+    }
+
+    free(local_scratch);
+    return retval;
+}
+
+/* ----------------------------------------------------------------------------
+ * EXISTING: Sequential / Fallback Reader
+ * ----------------------------------------------------------------------------
+ */
 int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
     const struct opt_eiger_ds_desc_t* opt = (const void*)d;
-    fprintf(stderr, "[DEBUG] get_virtual_frame: f=%d, n_map_entries=%d\n", f, opt->n_map_entries);
+
     int found = 0;
     int retval = -2; /* default: no mapping found */
     int used_fallback = 0;
@@ -33,7 +128,6 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
                 if (H5Dget_chunk_info_by_coord(E->src_dset_id, off, &mask, &addr, &sz) < 0 ||
                     sz == 0) {
                     if (H5Dget_chunk_storage_size(E->src_dset_id, off, &sz) < 0 || sz == 0) {
-                        /* Chunk info unavailable: fall back */
                         used_fallback = 1;
                         goto regular_read;
                     }
@@ -43,8 +137,6 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
                 E->cached_chunk_index = li;
                 E->chunk_info_valid = 1;
             }
-            fprintf(stderr, "[DEBUG] get_virtual_frame: direct chunk path (bs=%d, bytes=%llu)\n",
-                    E->has_bs_filter, (unsigned long long)sz);
             void* tmp = buf;
             if (E->has_bs_filter) {
                 if (!E->scratch || E->scratch_size < (size_t)sz) {
@@ -71,11 +163,7 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
         }
 
     regular_read:
-        if (!E->direct_read) {
-            fprintf(stderr, "[DEBUG] get_virtual_frame: direct_read=0 -> H5Dread\n");
-        } else if (used_fallback) {
-            fprintf(stderr, "[DEBUG] get_virtual_frame: fallback to H5Dread\n");
-        }
+        (void)used_fallback; /* Silence unused var warning */
         hid_t fs = H5Dget_space(E->src_dset_id);
         if (fs < 0) ERROR_JUMP(-1, done, "H5Dget_space failed");
         H5Sselect_hyperslab(fs, H5S_SELECT_SET, off, NULL, size, NULL);
