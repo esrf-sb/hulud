@@ -1,0 +1,10 @@
+---
+# Start with a base style (e.g., Google, LLVM, WebKit, Microsoft)
+BasedOnStyle: Google
+
+# Customize key parameters
+IndentWidth: 4          # Use 4 spaces for indentation
+ColumnLimit: 100        # Max line length of 100 characters
+BreakBeforeBraces: Attach # Put opening braces on the same line (like K&R or Google)
+PointerAlignment: Left  # Align pointer operators to the left (e.g., 'int* x')
+---

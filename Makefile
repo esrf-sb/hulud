@@ -43,17 +43,17 @@ $(BSLZ4_BUILD_DIR)/bitshuffle_core.o $(BSLZ4_BUILD_DIR)/iochain.o
 	mkdir -p $(BUILD_DIR)
 	ar rcs $@ $^
 
-$(BUILD_DIR)/durin-plugin.so: $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o \
+$(BUILD_DIR)/durin-plugin.so: $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o \
 $(BUILD_DIR)/bslz4.a
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -shared $^ -o $(BUILD_DIR)/durin-plugin.so
 
 # --- NEW BENCHMARK TARGET ---
-$(BUILD_DIR)/benchmark: $(SRC_DIR)/benchmark.c $(BUILD_DIR)/file.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a
+$(BUILD_DIR)/benchmark: $(SRC_DIR)/benchmark.c $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a
 	mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) $< $(BUILD_DIR)/file.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a -o $@
+	$(CC) $(CFLAGS) $< $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a -o $@
 
-$(BUILD_DIR)/example: $(BUILD_DIR)/test.o $(BUILD_DIR)/file.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o \
+$(BUILD_DIR)/example: $(BUILD_DIR)/test.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o \
 $(BUILD_DIR)/bslz4.a
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $^ -o $(BUILD_DIR)/example

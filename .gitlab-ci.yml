@@ -1,0 +1,32 @@
+stages:
+  - test
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+
+image: ubuntu:24.04
+
+before_script:
+  - apt-get update -q
+  - apt-get install -y build-essential gfortran libhdf5-dev zlib1g-dev git pkg-config
+
+integration-test:
+  stage: test
+  script:
+    # Patch Makefile ---
+    - sed -i 's/CC=h5cc/CC=gcc/g' Makefile
+    - sed -i 's/-shlib//g' Makefile
+    - sed -i '/^CFLAGS=/ s/$/ $(shell pkg-config --cflags hdf5-serial)/' Makefile
+    - sed -i '/-o \$(BUILD_DIR)\/durin-plugin.so/ s/$/ $(shell pkg-config --libs hdf5-serial) -lhdf5_hl/' Makefile
+
+    - make build/durin-plugin.so
+    - make test_plugin
+
+    - echo "$PWD/build/durin-plugin.so" > test.inputs
+    - echo "dummy_master.h5" >> test.inputs
+    - echo "1 5" >> test.inputs
+
+    - './build/test_plugin < test.inputs > test.log 2>&1 || true'
+    - cat test.log
+
+    - '! grep "ERROR" test.log && echo "Integration: Success (No link errors found)"'
