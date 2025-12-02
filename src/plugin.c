@@ -8,6 +8,7 @@
 #include <hdf5.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "file.h"
 #include "filters.h"
@@ -50,6 +51,9 @@ static size_t tmp_buffer_size = 0;
 static int fast_path = 0;
 static pthread_mutex_t plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int h5_atexit_configured = 0;
+static int apply_mask_and_cast = 1;
+
+static int env_truthy(const char* v) { return v && v[0] != '0' && v[0] != '\0'; }
 
 void fill_info_array(int info[1024]) {
     info[0] = DLS_CUSTOMER_ID;
@@ -112,7 +116,11 @@ void plugin_open(const char* filename, int info[1024], int* error_flag) {
 
     fill_info_array(info);
     const char* fp = getenv("DURIN_PLUGIN_FASTPATH");
-    fast_path = (fp && fp[0] != '0' && fp[0] != '\0');
+    fast_path = env_truthy(fp);
+
+    const char* disable_mask_env = getenv("DURIN_DISABLE_MASKING");
+    apply_mask_and_cast = !env_truthy(disable_mask_env);
+
     file_id = H5Fopen(filename, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file_id < 0) {
         char message[128] = {0};
@@ -126,18 +134,20 @@ void plugin_open(const char* filename, int info[1024], int* error_flag) {
         ERROR_JUMP(-4, done, "");
     }
 
-    mask_buffer = malloc(data_desc->dims[1] * data_desc->dims[2] * sizeof(int));
-    if (mask_buffer) {
-        retval = data_desc->get_pixel_mask(data_desc, mask_buffer);
-        if (retval < 0) {
-            fprintf(ERROR_OUTPUT,
-                    "WARNING: Could not read pixel mask - no masking will be applied\n");
-            dump_error_stack(ERROR_OUTPUT);
-            free(mask_buffer);
-            mask_buffer = NULL;
+    if (apply_mask_and_cast) {
+        mask_buffer = malloc(data_desc->dims[1] * data_desc->dims[2] * sizeof(int));
+        if (mask_buffer) {
+            retval = data_desc->get_pixel_mask(data_desc, mask_buffer);
+            if (retval < 0) {
+                fprintf(ERROR_OUTPUT,
+                        "WARNING: Could not read pixel mask - no masking will be applied\n");
+                dump_error_stack(ERROR_OUTPUT);
+                free(mask_buffer);
+                mask_buffer = NULL;
+            }
         }
+        retval = 0;
     }
-    retval = 0;
 
 done:
     *error_flag = retval;
@@ -218,6 +228,23 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
         char message[64] = {0};
         sprintf(message, "Failed to retrieve data for frame %d", *frame_number);
         ERROR_JUMP(-2, done, message);
+    }
+
+    if (!apply_mask_and_cast) {
+        if (buffer != data_array) {
+            size_t pixel_bytes = (size_t)data_desc->data_width;
+            size_t copy_bytes =
+                (pixel_bytes < sizeof(*data_array)) ? pixel_bytes : sizeof(*data_array);
+            memset(data_array, 0, (size_t)frame_size_px * sizeof(*data_array));
+            char* dst = (char*)data_array;
+            char* src = (char*)buffer;
+            size_t dst_stride = sizeof(*data_array);
+            for (int i = 0; i < frame_size_px; ++i) {
+                memcpy(dst + ((size_t)i * dst_stride), src + ((size_t)i * pixel_bytes),
+                       copy_bytes);
+            }
+        }
+        goto done;
     }
 
     /* Masking/Conversion Logic */
