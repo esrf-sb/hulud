@@ -7,6 +7,7 @@
 
 #include <hdf5.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 #include "file.h"
 #include "filters.h"
@@ -51,6 +52,7 @@ static int* mask_buffer = NULL;
 static void* tmp_buffer = NULL;
 static size_t tmp_buffer_size = 0;
 static int fast_path = 0; /* optional env flag to skip conversion/mask when safe */
+static pthread_mutex_t plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void fill_info_array(int info[1024]) {
     info[0] = DLS_CUSTOMER_ID;
@@ -98,6 +100,7 @@ extern "C" {
 void plugin_open(const char* filename, int info[1024], int* error_flag) {
     int retval = 0;
     *error_flag = 0;
+    pthread_mutex_lock(&plugin_mutex);
 
     init_error_handling();
 
@@ -142,6 +145,7 @@ void plugin_open(const char* filename, int info[1024], int* error_flag) {
 
 done:
     *error_flag = retval;
+    pthread_mutex_unlock(&plugin_mutex);
     if (retval < 0) {
         if ((data_desc) && (data_desc->free_desc)) {
             data_desc->free_desc(data_desc);
@@ -156,6 +160,7 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy, int*
     int err = 0;
     int retval = 0;
     double x_pixel_size, y_pixel_size;
+    pthread_mutex_lock(&plugin_mutex);
     /* avoid per-call overhead; info filled once in plugin_open */
 
     err = data_desc->get_pixel_properties(data_desc, &x_pixel_size, &y_pixel_size);
@@ -172,6 +177,7 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy, int*
 
 done:
     *error_flag = retval;
+    pthread_mutex_unlock(&plugin_mutex);
     if (retval < 0) {
         dump_error_stack(ERROR_OUTPUT);
     }
@@ -182,6 +188,7 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
     int retval = 0;
     int frame_size_px = data_desc->dims[1] * data_desc->dims[2];
     /* These are fixed after open; skip repeated info filling/reset to reduce overhead */
+    pthread_mutex_lock(&plugin_mutex);
 
     void* buffer = NULL;
     if ((int)sizeof(*data_array) == data_desc->data_width) {
@@ -220,12 +227,14 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
 
 done:
     *error_flag = retval;
+    pthread_mutex_unlock(&plugin_mutex);
     if (retval < 0) {
         dump_error_stack(ERROR_OUTPUT);
     }
 }
 
 void plugin_close(int* error_flag) {
+    pthread_mutex_lock(&plugin_mutex);
     if (file_id) {
         if (H5Fclose(file_id) < 0) {
             /* TODO: backtrace */
@@ -247,6 +256,7 @@ void plugin_close(int* error_flag) {
         data_desc->free_desc(data_desc);
         data_desc = NULL;
     }
+    pthread_mutex_unlock(&plugin_mutex);
     if (H5close() < 0) {
         *error_flag = -1;
     }

@@ -1,4 +1,5 @@
 #include <hdf5.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,49 @@ double get_time() {
     struct timeval t;
     gettimeofday(&t, NULL);
     return t.tv_sec + t.tv_usec * 1e-6;
+}
+
+struct worker_ctx {
+    int nx, ny, nbytes;
+    int total_frames;
+    int* info;
+    pthread_mutex_t* frame_mutex;
+    int* next_frame;
+    uint64_t checksum;
+    int err;
+};
+
+static void* worker_run(void* arg) {
+    struct worker_ctx* ctx = arg;
+    size_t frame_px = (size_t)ctx->nx * (size_t)ctx->ny;
+    int* buffer = malloc(frame_px * sizeof(int));
+    if (!buffer) {
+        ctx->err = -1;
+        return NULL;
+    }
+
+    while (1) {
+        int frame = -1;
+        pthread_mutex_lock(ctx->frame_mutex);
+        if (*ctx->next_frame < ctx->total_frames) {
+            frame = (*ctx->next_frame)++;
+        }
+        pthread_mutex_unlock(ctx->frame_mutex);
+        if (frame < 0) break;
+
+        int fn = frame + 1; /* plugin expects 1-based */
+        int nx = ctx->nx, ny = ctx->ny;
+        int local_err = 0;
+        plugin_get_data(&fn, &nx, &ny, buffer, ctx->info, &local_err);
+        if (local_err < 0) {
+            ctx->err = local_err;
+            break;
+        }
+        for (size_t j = 0; j < frame_px; ++j) ctx->checksum += buffer[j];
+    }
+
+    free(buffer);
+    return NULL;
 }
 
 int main(int argc, char** argv) {
@@ -104,6 +148,48 @@ int main(int argc, char** argv) {
     printf("Speed:      %.2f FPS\n", fps);
     printf("Throughput: %.2f MB/s\n", throughput);
     printf("Checksum:   0x%016llx\n", (unsigned long long)checksum);
+
+    /* Parallel benchmark (16 threads) using the plugin API */
+    int threads = 16;
+    pthread_t tids[16];
+    struct worker_ctx wctx[16];
+    pthread_mutex_t frame_mutex = PTHREAD_MUTEX_INITIALIZER;
+    int shared_next = 0;
+    uint64_t checksum_p = 0;
+    double tp_start = get_time();
+
+    for (int i = 0; i < threads; ++i) {
+        wctx[i].nx = nx;
+        wctx[i].ny = ny;
+        wctx[i].nbytes = nbytes;
+        wctx[i].total_frames = total_frames;
+        wctx[i].info = info;
+        wctx[i].frame_mutex = &frame_mutex;
+        wctx[i].next_frame = &shared_next;
+        wctx[i].checksum = 0;
+        wctx[i].err = 0;
+        pthread_create(&tids[i], NULL, worker_run, &wctx[i]);
+    }
+    for (int i = 0; i < threads; ++i) pthread_join(tids[i], NULL);
+    double tp_end = get_time();
+    for (int i = 0; i < threads; ++i) {
+        checksum_p += wctx[i].checksum;
+        if (wctx[i].err < 0) err = wctx[i].err;
+    }
+
+    double tp_elapsed = tp_end - tp_start;
+    double fps_p = total_frames / tp_elapsed;
+    double thr_p = (total_frames * frame_size_bytes) / (1024.0 * 1024.0 * tp_elapsed);
+
+    printf("\n--- Parallel (16 threads) ---\n");
+    if (err < 0) {
+        printf("Parallel run encountered an error\n");
+    }
+    printf("Time:       %.4f s\n", tp_elapsed);
+    printf("Frames:     %d\n", total_frames);
+    printf("Speed:      %.2f FPS\n", fps_p);
+    printf("Throughput: %.2f MB/s\n", thr_p);
+    printf("Checksum:   0x%016llx\n", (unsigned long long)checksum_p);
 
     free(buffer);
     plugin_close(&err);
