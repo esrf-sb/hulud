@@ -240,8 +240,7 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
             char* src = (char*)buffer;
             size_t dst_stride = sizeof(*data_array);
             for (int i = 0; i < frame_size_px; ++i) {
-                memcpy(dst + ((size_t)i * dst_stride), src + ((size_t)i * pixel_bytes),
-                       copy_bytes);
+                memcpy(dst + ((size_t)i * dst_stride), src + ((size_t)i * pixel_bytes), copy_bytes);
             }
         }
         goto done;

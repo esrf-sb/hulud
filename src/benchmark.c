@@ -79,7 +79,8 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: %s <master_file.h5> [options]\n", argv[0]);
             printf("  -n, --frames <N>   Limit number of frames to read\n");
-            printf("  -t, --threads <N>  Threads for parallel test (1 disables parallel section)\n");
+            printf(
+                "  -t, --threads <N>  Threads for parallel test (1 disables parallel section)\n");
             printf("      --no-mask      Disable masking/casting for benchmarking\n");
             return 0;
         } else if (!filename) {
