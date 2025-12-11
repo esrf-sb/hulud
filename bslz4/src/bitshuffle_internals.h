@@ -9,14 +9,12 @@
  * See LICENSE file for details about copyright and rights to use.
  */
 
-
 #ifndef BITSHUFFLE_INTERNALS_H
 #define BITSHUFFLE_INTERNALS_H
 
-
 #include <stdlib.h>
-#include "iochain.h"
 
+#include "iochain.h"
 
 #ifndef BSHUF_MIN_RECOMMEND_BLOCK
 #define BSHUF_MIN_RECOMMEND_BLOCK 128
@@ -24,10 +22,11 @@
 #define BSHUF_TARGET_BLOCK_SIZE_B 8192
 #endif
 
-
-
-#define CHECK_ERR_FREE(count, buf) if (count < 0) { free(buf); return count; }
-
+#define CHECK_ERR_FREE(count, buf) \
+    if (count < 0) {               \
+        free(buf);                 \
+        return count;              \
+    }
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,8 +34,7 @@ extern "C" {
 
 /* ---- Utility functions for internal use only ---- */
 
-int64_t bshuf_trans_bit_elem(const void* in, void* out, const size_t size,
-        const size_t elem_size);
+int64_t bshuf_trans_bit_elem(const void* in, void* out, const size_t size, const size_t elem_size);
 
 /* Read a 32 bit unsigned integer from a buffer big endian order. */
 uint32_t bshuf_read_uint32_BE(const void* buf);
@@ -45,16 +43,15 @@ uint32_t bshuf_read_uint32_BE(const void* buf);
 void bshuf_write_uint32_BE(void* buf, uint32_t num);
 
 int64_t bshuf_untrans_bit_elem(const void* in, void* out, const size_t size,
-        const size_t elem_size);
+                               const size_t elem_size);
 
 /* Function definition for worker functions that process a single block. */
-typedef int64_t (*bshufBlockFunDef)(ioc_chain* C_ptr,
-        const size_t size, const size_t elem_size);
+typedef int64_t (*bshufBlockFunDef)(ioc_chain* C_ptr, const size_t size, const size_t elem_size);
 
 /* Wrap a function for processing a single block to process an entire buffer in
  * parallel. */
-int64_t bshuf_blocked_wrap_fun(bshufBlockFunDef fun, const void* in, void* out,
-        const size_t size, const size_t elem_size, size_t block_size);
+int64_t bshuf_blocked_wrap_fun(bshufBlockFunDef fun, const void* in, void* out, const size_t size,
+                               const size_t elem_size, size_t block_size);
 
 #ifdef __cplusplus
 }

@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to the Durin VDS project will be documented in this file.
+## [1.3.1] -  2025-12-11
+### Known Issues
+ - **Relative Absolute Path** - Resolved Issue with relative path and symbolic links resolution
+ - ** Race competition** - Segmentation fault. Race competition on the scratch 
 
 ## [1.3.0] - 2025-12-02
 ### Added
