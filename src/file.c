@@ -799,16 +799,30 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
 
             /* Build the optimized map */
             if (build_vds_mapping(ds_id, master_dir, opt, eiger_desc) < 0) {
-                free(opt); /* eiger_desc freed inside build_vds_mapping on success, or manual here?
-                            */
-                           /* In case of failure inside build_vds, we rely on standard cleanup */
+                free(opt);
+                /* eiger_desc is usually freed inside build_vds_mapping on success */
                 ERROR_JUMP(-1, done, "Failed to build VDS mapping");
+            }
+
+            /* -----------------------------------------------------------
+             * CRITICAL FIX FOR THREAD SAFETY
+             * ----------------------------------------------------------- */
+
+            /* 1. Build the parallel index (open FDs, pre-calculate offsets) */
+            if (build_parallel_index(opt) < 0) {
+                free(opt);
+                ERROR_JUMP(-1, done, "Failed to build parallel index");
             }
 
             *(struct opt_eiger_ds_desc_t**)desc = opt;
             free_func = &free_opt_eiger_desc;
             output = (struct ds_desc_t*)opt;
-            output->get_data_frame = &get_virtual_frame;
+
+            /* 2. Assign the THREAD-SAFE reader function */
+            output->get_data_frame = &get_virtual_frame_parallel;
+
+            /* ----------------------------------------------------------- */
+
         } else {
             /* Standard Eiger */
             free(opt);
