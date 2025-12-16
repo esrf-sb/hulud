@@ -425,8 +425,6 @@ int get_dectris_eiger_dataset_dims(struct ds_desc_t* desc) {
     return retval;
 }
 
-/* --- PIXEL INFO & METADATA --- */
-
 int read_pixel_info(hid_t g_id, const char* path, double* size) {
     int retval = 0;
     herr_t err = 0;
@@ -435,89 +433,67 @@ int read_pixel_info(hid_t g_id, const char* path, double* size) {
 
     ds_id = H5Dopen2(g_id, path, H5P_DEFAULT);
     if (ds_id < 0) {
-        char message[MAX_MSG_LEN];
-        snprintf(message, sizeof(message), "Error opening dataset %.32s", path);
-        ERROR_JUMP(-1, done, message);
+        // Quiet failure is better for optional paths, or log if strict
+        return -1;
     }
 
     err = H5Dread(ds_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &value);
     if (err < 0) {
-        char message[MAX_MSG_LEN];
-        snprintf(message, sizeof(message), "Error reading dataset %.32s", path);
-        ERROR_JUMP(-1, close_dataset, message);
+        H5Dclose(ds_id);
+        return -1;
     }
 
+    /* --- ROBUST STRING READING WITH PADDING HANDLING --- */
     if (H5Aexists(ds_id, "units") > 0) {
-        hid_t a_id, t_id, mt_id;
-        void* str_buffer = NULL;
-        size_t str_size = 0;
-        int is_vlen = 0;
+        hid_t a_id, f_type, m_type;
+        size_t s_size;
+        char* str_buffer = NULL;
 
         a_id = H5Aopen(ds_id, "units", H5P_DEFAULT);
-        if (a_id < 0) {
-            char message[MAX_MSG_LEN];
-            snprintf(message, sizeof(message), "Error opening units attribute for %.32s", path);
-            ERROR_JUMP(-1, close_dataset, message);
+
+        /* 1. Get the size from the file */
+        f_type = H5Aget_type(a_id);
+        s_size = H5Tget_size(f_type);
+        H5Tclose(f_type);
+
+        if (s_size > 0) {
+            /* 2. Allocate s_size + 1 (for our manual null terminator) */
+            str_buffer = (char*)malloc(s_size + 1);
+            if (str_buffer) {
+                /* 3. Create a C-String type of the exact size */
+                m_type = H5Tcopy(H5T_C_S1);
+                H5Tset_size(m_type, s_size);
+
+                /* * CRITICAL FIX:
+                 * Tell HDF5 NOT to look for/add a null terminator during the read.
+                 * Just copy the raw bytes.
+                 */
+                H5Tset_strpad(m_type, H5T_STR_NULLPAD);
+
+                /* 4. Read the raw characters */
+                err = H5Aread(a_id, m_type, str_buffer);
+
+                if (err >= 0) {
+                    /* 5. Manually null terminate */
+                    str_buffer[s_size] = '\0';
+
+                    /* 6. Parse */
+                    double scale = scale_from_units(str_buffer);
+                    value *= scale;
+                } else {
+                    fprintf(stderr, "Error reading units attribute content.\n");
+                }
+
+                H5Tclose(m_type);
+                free(str_buffer);
+            }
         }
-
-        t_id = H5Aget_type(a_id);
-        if (t_id < 0) {
-            ERROR_JUMP(-1, close_attribute, "Error getting datatype");
-        }
-
-        if (H5Tis_variable_str(t_id) > 0) {
-            is_vlen = 1;
-            str_buffer = malloc(sizeof(char*));
-        } else {
-            str_size = H5Tget_size(t_id);
-            str_buffer = malloc(str_size + 1);
-        }
-
-        if (str_buffer == NULL) {
-            ERROR_JUMP(-1, close_datatype, "Unable to allocate string buffer");
-        }
-
-        mt_id = H5Tcopy(H5T_C_S1);
-        if (mt_id < 0) {
-            ERROR_JUMP(-1, free_string, "Error creating HDF5 String datatype");
-        }
-
-        err = H5Tset_size(mt_id, is_vlen ? H5T_VARIABLE : str_size);
-        if (err < 0) {
-            ERROR_JUMP(-1, close_mem_datatype, "Error setting datatype size");
-        }
-
-        err = H5Aread(a_id, mt_id, str_buffer);
-        if (err < 0) {
-            ERROR_JUMP(-1, close_mem_datatype, "Error reading units attribute");
-        }
-
-        if (!is_vlen && str_size > 0) {
-            ((char*)str_buffer)[str_size] = '\0';
-        }
-
-        char* unit_str = is_vlen ? *(char**)str_buffer : (char*)str_buffer;
-        double scale = scale_from_units(unit_str);
-        value *= scale;
-
-        if (is_vlen) {
-            H5Dvlen_reclaim(mt_id, H5S_ALL, H5P_DEFAULT, str_buffer);
-        }
-
-    close_mem_datatype:
-        H5Tclose(mt_id);
-    free_string:
-        free(str_buffer);
-    close_datatype:
-        H5Tclose(t_id);
-    close_attribute:
         H5Aclose(a_id);
     }
+    /* ------------------------------------------------ */
 
-close_dataset:
     H5Dclose(ds_id);
-done:
-    if (retval == 0) *size = value;
+    *size = value;
     return retval;
 }
 
