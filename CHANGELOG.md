@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to the Durin VDS project will be documented in this file.
+
+## [1.4.0] -  2025-12-16
+### Known Issues
+- **Performance:** - New optimize reader (multiprocessing) for non vds/lima2 data. Performance little bit faster than neggia.
+
 ## [1.3.1] -  2025-12-11
 ### Known Issues
  - **Relative Absolute Path** - Resolved Issue with relative path and symbolic links resolution
