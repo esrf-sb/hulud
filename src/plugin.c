@@ -138,7 +138,7 @@ void plugin_open(const char* filename, int info[1024], int* error_flag) {
     if (!h5_atexit_configured) {
         h5_atexit_configured = 1;
         if (H5dont_atexit() < 0) {
-            reset_error_stack(); /* benign if another library already initialised HDF5 */
+            reset_error_stack();
         }
     }
 
@@ -281,9 +281,6 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
 
 done:
     *error_flag = retval;
-
-    /* pthread_mutex_unlock(&plugin_mutex); */
-
     if (retval < 0) {
         dump_error_stack(ERROR_OUTPUT);
     }
@@ -313,5 +310,5 @@ void plugin_close(int* error_flag) {
 }
 
 #ifdef __cplusplus
-} /* extern "C" */
+}
 #endif

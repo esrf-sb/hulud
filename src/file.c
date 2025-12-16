@@ -132,8 +132,8 @@ static int build_direct_chunk_map(hid_t data_group_id, struct eiger_ds_desc_t* b
         const char* to_store = realpath(file_path, resolved) ? resolved : file_path;
         E->src_file = strdup(to_store);
 
-        E->src_file_id = fid;   /* keep ref-counted handle for cleanup */
-        E->src_dset_id = dset;  /* keep open: used by build_parallel_index */
+        E->src_file_id = fid;  /* keep ref-counted handle for cleanup */
+        E->src_dset_id = dset; /* keep open: used by build_parallel_index */
 
         frame_offset += block_frames;
     }
