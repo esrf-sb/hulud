@@ -46,12 +46,44 @@
 static hid_t file_id = 0;
 static struct ds_desc_t* data_desc = NULL;
 static int* mask_buffer = NULL;
-static void* tmp_buffer = NULL;
-static size_t tmp_buffer_size = 0;
 static int fast_path = 0;
 static pthread_mutex_t plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int h5_atexit_configured = 0;
 static int apply_mask_and_cast = 1;
+
+struct thread_tmp_buffer {
+    void* buffer;
+    size_t size;
+};
+static pthread_once_t tmp_buffer_key_once = PTHREAD_ONCE_INIT;
+static pthread_key_t tmp_buffer_key;
+
+static void destroy_thread_tmp(void* ptr) {
+    struct thread_tmp_buffer* state = ptr;
+    if (state) {
+        free(state->buffer);
+        free(state);
+    }
+}
+
+static void init_tmp_buffer_key(void) { pthread_key_create(&tmp_buffer_key, destroy_thread_tmp); }
+
+static void* get_thread_tmp_buffer(size_t needed) {
+    pthread_once(&tmp_buffer_key_once, init_tmp_buffer_key);
+    struct thread_tmp_buffer* state = pthread_getspecific(tmp_buffer_key);
+    if (!state) {
+        state = calloc(1, sizeof(*state));
+        if (!state) return NULL;
+        pthread_setspecific(tmp_buffer_key, state);
+    }
+    if (state->size < needed) {
+        void* nb = realloc(state->buffer, needed);
+        if (!nb) return NULL;
+        state->buffer = nb;
+        state->size = needed;
+    }
+    return state->buffer;
+}
 
 static int env_truthy(const char* v) { return v && v[0] != '0' && v[0] != '\0'; }
 
@@ -199,28 +231,15 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int i
      */
     /* pthread_mutex_lock(&plugin_mutex); */
 
-    /* * CAUTION: 'tmp_buffer' is a global static.
-     * It is NOT safe for parallel use.
-     * However, the new get_virtual_frame_parallel allocates its own local buffer,
-     * so it ignores tmp_buffer.
-     * We only use tmp_buffer if the format conversion below is needed.
-     */
-
     void* buffer = NULL;
     if ((int)sizeof(*data_array) == data_desc->data_width) {
         buffer = data_array;
     } else {
-        /* If we are here in parallel mode, we are in trouble because tmp_buffer is shared. */
         size_t needed = (size_t)data_desc->data_width * frame_size_px;
-        if (!tmp_buffer || tmp_buffer_size < needed) {
-            void* nb = realloc(tmp_buffer, needed);
-            if (!nb) {
-                ERROR_JUMP(-1, done, "Unable to allocate data buffer");
-            }
-            tmp_buffer = nb;
-            tmp_buffer_size = needed;
+        buffer = get_thread_tmp_buffer(needed);
+        if (!buffer) {
+            ERROR_JUMP(-1, done, "Unable to allocate data buffer");
         }
-        buffer = tmp_buffer;
     }
 
     /* 1-based index from XDS converted to 0-based */
@@ -283,12 +302,7 @@ void plugin_close(int* error_flag) {
         free(mask_buffer);
         mask_buffer = NULL;
     }
-    if (tmp_buffer) {
-        free(tmp_buffer);
-        tmp_buffer = NULL;
-        tmp_buffer_size = 0;
-    }
-    if (data_desc->free_desc) {
+    if (data_desc && data_desc->free_desc) {
         data_desc->free_desc(data_desc);
         data_desc = NULL;
     }

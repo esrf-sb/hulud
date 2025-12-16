@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 #include "err.h"
 #include "filters.h"
@@ -34,6 +35,129 @@ static hid_t CACHED_DID = 0;                     // Stores the open HDF5 Dataset
 static char CACHED_DS_NAME[MAX_NAME_LEN] = {0};  // Stores the name (e.g., "data_000001")
 
 /* --- HELPER FUNCTIONS --- */
+
+/* Determine whether a dataset can be read via raw chunk offsets (no HDF5 filter plugins) */
+static int populate_filter_flags(hid_t dset, struct FrameMapEntry* entry) {
+    hid_t plist = H5Dget_create_plist(dset);
+    if (plist < 0) return -1;
+
+    H5D_layout_t layout = H5Pget_layout(plist);
+    if (layout != H5D_CHUNKED) {
+        entry->direct_read = 0;
+        entry->has_bs_filter = 0;
+        H5Pclose(plist);
+        return -1;
+    }
+
+    int nf = H5Pget_nfilters(plist);
+    if (nf == 0) {
+        entry->direct_read = 1;
+        entry->has_bs_filter = 0;
+    } else {
+        unsigned int flags = 0, config = 0;
+        size_t n = BS_H5_N_PARAMS;
+        H5Z_filter_t f = H5Pget_filter2(plist, 0, &flags, &n, entry->bs_params, 0, NULL, &config);
+        if (f == BS_H5_FILTER_ID) {
+            entry->direct_read = 1;
+            entry->has_bs_filter = 1;
+        } else {
+            entry->direct_read = 0;
+            entry->has_bs_filter = 0;
+        }
+    }
+    H5Pclose(plist);
+    return 0;
+}
+
+/* Build a minimal FrameMapEntry array for non-VDS, chunked Eiger datasets */
+static int build_direct_chunk_map(hid_t data_group_id, struct eiger_ds_desc_t* base,
+                                  struct opt_eiger_ds_desc_t* opt) {
+    int retval = 0;
+    hsize_t frame_offset = 0;
+
+    opt->frame_map_entries = calloc(base->n_data_blocks, sizeof(struct FrameMapEntry));
+    if (!opt->frame_map_entries) return -1;
+
+    for (int block = 0; block < base->n_data_blocks; ++block) {
+        char ds_name[MAX_NAME_LEN] = {0};
+        snprintf(ds_name, sizeof(ds_name), "data_%06d", block + 1);
+
+        hid_t dset = H5Dopen2(data_group_id, ds_name, H5P_DEFAULT);
+        if (dset < 0) {
+            retval = -1;
+            break;
+        }
+
+        struct FrameMapEntry* E = &opt->frame_map_entries[block];
+        memset(E, 0, sizeof(*E));
+
+        if (populate_filter_flags(dset, E) < 0 || !E->direct_read) {
+            H5Dclose(dset);
+            retval = -1;
+            break;
+        }
+
+        /* Frame span for this dataset */
+        if (!base->block_sizes || base->block_sizes[block] <= 0) {
+            H5Dclose(dset);
+            retval = -1;
+            break;
+        }
+        hsize_t block_frames = (hsize_t)base->block_sizes[block];
+
+        E->vds_start = frame_offset;
+        E->vds_end = frame_offset + block_frames - 1;
+        E->src_start = 0;
+        E->src_end = block_frames - 1;
+
+        /* Dataset path within the file */
+        char ds_path[MAX_NAME_LEN] = {0};
+        if (H5Iget_name(dset, ds_path, sizeof(ds_path)) < 0) {
+            H5Dclose(dset);
+            retval = -1;
+            break;
+        }
+        E->src_dset = strdup(ds_path);
+
+        /* Backing file path (resolved to avoid symlink surprises) */
+        hid_t fid = H5Iget_file_id(dset);
+        char file_path[MAX_PATH_LEN] = {0};
+        if (H5Fget_name(fid, file_path, sizeof(file_path)) < 0) {
+            H5Fclose(fid);
+            H5Dclose(dset);
+            retval = -1;
+            break;
+        }
+        char resolved[PATH_MAX] = {0};
+        const char* to_store = realpath(file_path, resolved) ? resolved : file_path;
+        E->src_file = strdup(to_store);
+
+        E->src_file_id = fid;   /* keep ref-counted handle for cleanup */
+        E->src_dset_id = dset;  /* keep open: used by build_parallel_index */
+
+        frame_offset += block_frames;
+    }
+
+    if (retval < 0) {
+        /* Clean up anything we allocated/opened */
+        if (opt->frame_map_entries) {
+            for (int i = 0; i < base->n_data_blocks; ++i) {
+                struct FrameMapEntry* E = &opt->frame_map_entries[i];
+                if (E->src_dset_id > 0) H5Dclose(E->src_dset_id);
+                if (E->src_file_id > 0) H5Fclose(E->src_file_id);
+                free(E->src_file);
+                free(E->src_dset);
+            }
+            free(opt->frame_map_entries);
+            opt->frame_map_entries = NULL;
+        }
+    } else {
+        opt->n_map_entries = base->n_data_blocks;
+        opt->is_virtual = 0;
+    }
+
+    return retval;
+}
 
 void reset_dataset_cache(void) {
     if (CACHED_DID > 0) {
@@ -101,12 +225,18 @@ void free_opt_eiger_desc(struct ds_desc_t* desc) {
 
     reset_dataset_cache();
 
+    if (opt_desc->fast_index) {
+        free(opt_desc->fast_index);
+        opt_desc->fast_index = NULL;
+    }
+
     /* Cleanup VDS mapping resources */
     if (opt_desc->frame_map_entries) {
         for (int i = 0; i < opt_desc->n_map_entries; ++i) {
             struct FrameMapEntry* E = &opt_desc->frame_map_entries[i];
             if (E->src_dset_id > 0) H5Dclose(E->src_dset_id);
             if (E->src_file_id > 0) H5Fclose(E->src_file_id);
+            if (E->raw_fd > 0) close(E->raw_fd);
             free(E->src_file);
             free(E->src_dset);
             free(E->scratch);
@@ -800,15 +930,57 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
             /* ----------------------------------------------------------- */
 
         } else {
-            /* Standard Eiger */
-            free(opt);
-            *(struct eiger_ds_desc_t**)desc = eiger_desc;
-            free_func = &free_eiger_desc;
-            output = (struct ds_desc_t*)eiger_desc;
+            /* Standard Eiger (non-VDS) */
+            int fast_ready = 0;
+
+            /* Populate sizes before attempting a fast-path */
+            eiger_desc->base.det_g_id = g_id;
+            eiger_desc->base.data_g_id = ds_id;
+            ds_prop_func((struct ds_desc_t*)eiger_desc);
+
+            if (build_direct_chunk_map(ds_id, eiger_desc, opt) == 0) {
+                opt->base = *eiger_desc; /* copy dims/block_sizes ownership to opt */
+
+                if (build_parallel_index(opt) == 0) {
+                    fast_ready = 1;
+                    free(eiger_desc); /* block_sizes now owned by opt->base */
+                } else {
+                    /* Drop partial fast-path state without freeing block_sizes */
+                    if (opt->fast_index) {
+                        free(opt->fast_index);
+                        opt->fast_index = NULL;
+                    }
+                    if (opt->frame_map_entries) {
+                        for (int i = 0; i < opt->n_map_entries; ++i) {
+                            struct FrameMapEntry* E = &opt->frame_map_entries[i];
+                            if (E->src_dset_id > 0) H5Dclose(E->src_dset_id);
+                            if (E->src_file_id > 0) H5Fclose(E->src_file_id);
+                            free(E->src_file);
+                            free(E->src_dset);
+                            free(E->scratch);
+                        }
+                        free(opt->frame_map_entries);
+                        opt->frame_map_entries = NULL;
+                        opt->n_map_entries = 0;
+                    }
+                }
+            }
+
+            if (fast_ready) {
+                *(struct opt_eiger_ds_desc_t**)desc = opt;
+                free_func = &free_opt_eiger_desc;
+                output = (struct ds_desc_t*)opt;
+                output->get_data_frame = &get_virtual_frame_parallel;
+            } else {
+                free(opt);
+                *(struct eiger_ds_desc_t**)desc = eiger_desc;
+                free_func = &free_eiger_desc;
+                output = (struct ds_desc_t*)eiger_desc;
+                output->get_data_frame = &get_dectris_eiger_frame;
+            }
+
             output->det_g_id = g_id;
             output->data_g_id = ds_id;
-            ds_prop_func(output);
-            output->get_data_frame = &get_dectris_eiger_frame;
         }
     } else {
         /* Standard Nexus */

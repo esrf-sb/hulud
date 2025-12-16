@@ -29,6 +29,7 @@ struct ParallelFrameIndex {
     long long byte_offset;   /* Byte offset in the file */
     size_t chunk_size;       /* Compressed size in bytes */
     unsigned int* bs_params; /* Pointer to compression params (borrowed from MapEntry) */
+    int has_bs_filter;       /* Whether this chunk needs bitshuffle-lz4 decompression */
 };
 
 /* Frame map entry to support VDS bypass */
@@ -50,6 +51,7 @@ struct FrameMapEntry {
     hsize_t cached_chunk_index;
     void* scratch;
     size_t scratch_size;
+    int raw_fd; /* Open OS fd used by the fast-path reader */
 };
 
 struct det_visit_objects_t;  // Needed by file.c

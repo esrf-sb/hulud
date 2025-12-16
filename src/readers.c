@@ -6,6 +6,7 @@
 #include <hdf5_hl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h> /* For pread() */
 
 #include "err.h"
@@ -18,11 +19,19 @@
  * ----------------------------------------------------------------------------
  */
 int build_parallel_index(struct opt_eiger_ds_desc_t* opt) {
+    int retval = 0;
     int total_frames = opt->base.base.dims[0];
+    int* entry_fds = calloc((size_t)opt->n_map_entries, sizeof(int));
     opt->fast_index = calloc(total_frames, sizeof(struct ParallelFrameIndex));
-    if (!opt->fast_index) return -1;
+    if (!opt->fast_index || !entry_fds) {
+        free(entry_fds);
+        free(opt->fast_index);
+        opt->fast_index = NULL;
+        return -1;
+    }
 
-    for (int i = 0; i < opt->n_map_entries; ++i) {
+    int i = 0;
+    for (i = 0; i < opt->n_map_entries; ++i) {
         struct FrameMapEntry* E = &opt->frame_map_entries[i];
 
         /* Open the raw source file directly (OS level) */
@@ -30,8 +39,11 @@ int build_parallel_index(struct opt_eiger_ds_desc_t* opt) {
         if (fd < 0) {
             fprintf(stderr, "[DURIN] Failed to open raw file for parallel read: %s\n", E->src_file);
             /* Cleanup will happen in free_opt_eiger_desc */
-            return -1;
+            retval = -1;
+            goto fail;
         }
+        E->raw_fd = fd;
+        entry_fds[i] = fd;
 
         hsize_t count = (E->vds_end - E->vds_start) + 1;
 
@@ -49,7 +61,8 @@ int build_parallel_index(struct opt_eiger_ds_desc_t* opt) {
             if (H5Dget_chunk_info_by_coord(E->src_dset_id, chunk_offset, &filter_mask, &byte_addr,
                                            &size) < 0) {
                 fprintf(stderr, "[DURIN] Failed to get chunk info for frame %d\n", global_frame);
-                return -1;
+                retval = -1;
+                goto fail;
             }
 
             /* Store in fast index */
@@ -57,9 +70,23 @@ int build_parallel_index(struct opt_eiger_ds_desc_t* opt) {
             opt->fast_index[global_frame].byte_offset = (long long)byte_addr;
             opt->fast_index[global_frame].chunk_size = (size_t)size;
             opt->fast_index[global_frame].bs_params = E->bs_params;
+            /* If the bitshuffle filter is disabled for this chunk, don't try to decompress */
+            opt->fast_index[global_frame].has_bs_filter =
+                E->has_bs_filter && ((filter_mask & 0x1u) == 0);
         }
     }
-    return 0;
+    free(entry_fds);
+    return retval;
+
+fail:
+    for (int k = 0; k <= i && k < opt->n_map_entries; ++k) {
+        if (entry_fds[k] > 0) close(entry_fds[k]);
+        opt->frame_map_entries[k].raw_fd = -1;
+    }
+    free(entry_fds);
+    free(opt->fast_index);
+    opt->fast_index = NULL;
+    return retval;
 }
 
 /* ----------------------------------------------------------------------------
@@ -86,12 +113,22 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
     ssize_t bytes_read = pread(idx->fd, local_scratch, idx->chunk_size, idx->byte_offset);
 
     int retval = 0;
-    if (bytes_read != (ssize_t)idx->chunk_size) {
+    if (bytes_read != (ssize_t)idx->chunk_size || idx->chunk_size == 0) {
         retval = -1;
     } else {
-        /* Decompress */
-        retval = bslz4_decompress(idx->bs_params, idx->chunk_size, local_scratch,
-                                  d->data_width * d->dims[1] * d->dims[2], buf);
+        size_t expected = (size_t)d->data_width * d->dims[1] * d->dims[2];
+        if (idx->has_bs_filter) {
+            /* Decompress Bitshuffle-LZ4 */
+            retval =
+                bslz4_decompress(idx->bs_params, idx->chunk_size, local_scratch, expected, buf);
+        } else if (idx->chunk_size == expected) {
+            /* No compression: copy bytes directly */
+            memcpy(buf, local_scratch, expected);
+            retval = 0;
+        } else {
+            fprintf(stderr, "[DURIN] Unsupported compression pipeline for frame %d\n", f);
+            retval = -1;
+        }
     }
 
     free(local_scratch);
