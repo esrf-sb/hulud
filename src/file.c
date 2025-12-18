@@ -196,7 +196,11 @@ static int build_direct_chunk_map(hid_t data_group_id, struct eiger_ds_desc_t* b
 
     for (int block = 0; block < base->n_data_blocks; ++block) {
         char ds_name[MAX_NAME_LEN] = {0};
-        snprintf(ds_name, sizeof(ds_name), "data_%06d", block + 1);
+        if (base->block_names && base->block_names[block]) {
+            snprintf(ds_name, sizeof(ds_name), "%s", base->block_names[block]);
+        } else {
+            snprintf(ds_name, sizeof(ds_name), "data_%06d", block + 1);
+        }
 
         hid_t dset = H5Dopen2(data_group_id, ds_name, H5P_DEFAULT);
         if (dset < 0) {
@@ -221,8 +225,11 @@ static int build_direct_chunk_map(hid_t data_group_id, struct eiger_ds_desc_t* b
         }
         hsize_t block_frames = (hsize_t)base->block_sizes[block];
 
-        E->vds_start = frame_offset;
-        E->vds_end = frame_offset + block_frames - 1;
+        hsize_t start = frame_offset;
+        if (base->block_starts) start = base->block_starts[block];
+
+        E->vds_start = start;
+        E->vds_end = start + block_frames - 1;
         E->src_start = 0;
         E->src_end = block_frames - 1;
 
@@ -250,7 +257,7 @@ static int build_direct_chunk_map(hid_t data_group_id, struct eiger_ds_desc_t* b
         E->src_file_id = fid;  /* keep ref-counted handle for cleanup */
         E->src_dset_id = dset; /* keep open: used by build_parallel_index */
 
-        frame_offset += block_frames;
+        frame_offset = E->vds_end + 1;
     }
 
     if (retval < 0) {
@@ -330,6 +337,11 @@ void free_eiger_desc(struct ds_desc_t* desc) {
     struct eiger_ds_desc_t* e_desc = (struct eiger_ds_desc_t*)desc;
     if (e_desc) {
         free(e_desc->block_sizes);
+        free(e_desc->block_starts);
+        if (e_desc->block_names) {
+            for (int i = 0; i < e_desc->n_data_blocks; ++i) free(e_desc->block_names[i]);
+            free(e_desc->block_names);
+        }
     }
     free_ds_desc(desc);
 }
@@ -360,6 +372,11 @@ void free_opt_eiger_desc(struct ds_desc_t* desc) {
     }
 
     if (opt_desc->base.block_sizes) free(opt_desc->base.block_sizes);
+    if (opt_desc->base.block_starts) free(opt_desc->base.block_starts);
+    if (opt_desc->base.block_names) {
+        for (int i = 0; i < opt_desc->base.n_data_blocks; ++i) free(opt_desc->base.block_names[i]);
+        free(opt_desc->base.block_names);
+    }
     free_ds_desc(desc);
 }
 
@@ -558,8 +575,6 @@ done:
 
 int get_dectris_eiger_frame(const struct ds_desc_t* desc, int n, void* buffer) {
     int retval = 0;
-    int block = 0;
-    hsize_t frame_count = 0;
     struct eiger_ds_desc_t* eiger_desc = (struct eiger_ds_desc_t*)desc;
     char data_name[MAX_NAME_LEN] = {0};
     hsize_t frame_idx[3] = {0, 0, 0};
@@ -573,12 +588,45 @@ int get_dectris_eiger_frame(const struct ds_desc_t* desc, int n, void* buffer) {
     }
 
     /* Find which data block this frame resides in */
-    while ((frame_count += eiger_desc->block_sizes[block]) <= n) block++;
+    int block = -1;
+    hsize_t frame_offset = 0;
 
-    int idx = n - (frame_count - eiger_desc->block_sizes[block]);
+    if (eiger_desc->block_starts) {
+        for (int i = 0; i < eiger_desc->n_data_blocks; ++i) {
+            hsize_t start = eiger_desc->block_starts[i];
+            hsize_t end = start + (hsize_t)eiger_desc->block_sizes[i] - 1;
+            if ((hsize_t)n >= start && (hsize_t)n <= end) {
+                block = i;
+                frame_offset = start;
+                break;
+            }
+        }
+    } else {
+        hsize_t frame_count = 0;
+        for (int i = 0; i < eiger_desc->n_data_blocks; ++i) {
+            frame_count += (hsize_t)eiger_desc->block_sizes[i];
+            if (frame_count > (hsize_t)n) {
+                block = i;
+                frame_offset = frame_count - (hsize_t)eiger_desc->block_sizes[i];
+                break;
+            }
+        }
+    }
+
+    if (block < 0) {
+        /* Frame falls into a gap (no backing dataset). Return a zero-filled frame. */
+        memset(buffer, 0, (size_t)desc->data_width * (size_t)desc->dims[1] * (size_t)desc->dims[2]);
+        goto done;
+    }
+
+    int idx = n - (int)frame_offset;
     frame_idx[0] = idx;
 
-    snprintf(data_name, sizeof(data_name), "data_%06d", block + 1);
+    if (eiger_desc->block_names && eiger_desc->block_names[block]) {
+        snprintf(data_name, sizeof(data_name), "%s", eiger_desc->block_names[block]);
+    } else {
+        snprintf(data_name, sizeof(data_name), "data_%06d", block + 1);
+    }
 
     retval = eiger_desc->frame_func(desc, data_name, frame_idx, frame_size, buffer);
     if (retval < 0) {
@@ -588,94 +636,247 @@ done:
     return retval;
 }
 
+/* --- Eiger dataset discovery (handles gaps using image_nr_low/high) --- */
+
+struct data_block_info {
+    char name[MAX_NAME_LEN];
+    hsize_t frames;
+    hsize_t start; /* 0-based global start index */
+    hsize_t end;   /* 0-based inclusive end */
+    int has_range;
+};
+
+struct data_block_list {
+    struct data_block_info* blocks;
+    size_t used;
+    size_t cap;
+    hsize_t dim1;
+    hsize_t dim2;
+    int data_width;
+    int any_range;
+};
+
+static int ensure_block_capacity(struct data_block_list* list, size_t needed) {
+    if (list->cap >= needed) return 0;
+    size_t newcap = list->cap ? list->cap * 2 : 8;
+    if (newcap < needed) newcap = needed;
+    struct data_block_info* nb = realloc(list->blocks, newcap * sizeof(*nb));
+    if (!nb) return -1;
+    list->blocks = nb;
+    list->cap = newcap;
+    return 0;
+}
+
+static int data_suffix_index(const char* name) {
+    if (!name || strncmp(name, "data_", 5) != 0) return -1;
+    const char* num = name + 5;
+    int idx = 0;
+    if (*num == '\0') return -1;
+    while (*num) {
+        if (!isdigit((unsigned char)*num)) return -1;
+        idx = (idx * 10) + (*num - '0');
+        num++;
+    }
+    return idx;
+}
+
+static int compare_blocks_by_start(const void* a, const void* b) {
+    const struct data_block_info* A = a;
+    const struct data_block_info* B = b;
+    if (A->start == B->start) return strcmp(A->name, B->name);
+    return (A->start < B->start) ? -1 : 1;
+}
+
+static int compare_blocks_by_index(const void* a, const void* b) {
+    const struct data_block_info* A = a;
+    const struct data_block_info* B = b;
+    int ia = data_suffix_index(A->name);
+    int ib = data_suffix_index(B->name);
+    if (ia >= 0 && ib >= 0 && ia != ib) return (ia < ib) ? -1 : 1;
+    return strcmp(A->name, B->name);
+}
+
+static herr_t collect_data_block_cb(hid_t g_id, const char* name, const H5L_info_t* info,
+                                    void* op_data) {
+    (void)info;
+    struct data_block_list* ctx = op_data;
+    if (!name || strncmp(name, "data_", 5) != 0) return 0;
+    /* Require data_ followed by digits */
+    for (const char* p = name + 5; *p; ++p) {
+        if (!isdigit((unsigned char)*p)) return 0;
+    }
+
+    hid_t ds_id = H5Dopen2(g_id, name, H5P_DEFAULT);
+    if (ds_id < 0) return 0;
+
+    hid_t s_id = H5Dget_space(ds_id);
+    if (s_id < 0) {
+        H5Dclose(ds_id);
+        return 0;
+    }
+    int ndims = H5Sget_simple_extent_ndims(s_id);
+    if (ndims != 3) {
+        H5Sclose(s_id);
+        H5Dclose(ds_id);
+        return 0;
+    }
+    hsize_t dims[3] = {0};
+    if (H5Sget_simple_extent_dims(s_id, dims, NULL) < 0) {
+        H5Sclose(s_id);
+        H5Dclose(ds_id);
+        return 0;
+    }
+
+    hid_t t_id = H5Dget_type(ds_id);
+    if (t_id < 0) {
+        H5Sclose(s_id);
+        H5Dclose(ds_id);
+        return 0;
+    }
+    size_t width = H5Tget_size(t_id);
+
+    if (ctx->data_width == 0) {
+        ctx->data_width = (int)width;
+    } else if (ctx->data_width != (int)width) {
+        H5Tclose(t_id);
+        H5Sclose(s_id);
+        H5Dclose(ds_id);
+        return -1; /* inconsistent type size */
+    }
+
+    if (ctx->dim1 == 0 && ctx->dim2 == 0) {
+        ctx->dim1 = dims[1];
+        ctx->dim2 = dims[2];
+    } else if (ctx->dim1 != dims[1] || ctx->dim2 != dims[2]) {
+        H5Tclose(t_id);
+        H5Sclose(s_id);
+        H5Dclose(ds_id);
+        return -1; /* inconsistent geometry */
+    }
+
+    hsize_t start = 0;
+    hsize_t end = dims[0] ? dims[0] - 1 : 0;
+    int has_range = 0;
+    if (H5Aexists(ds_id, "image_nr_low") > 0 && H5Aexists(ds_id, "image_nr_high") > 0) {
+        long long low = 0, high = 0;
+        hid_t a_low = H5Aopen(ds_id, "image_nr_low", H5P_DEFAULT);
+        hid_t a_high = H5Aopen(ds_id, "image_nr_high", H5P_DEFAULT);
+        if (a_low >= 0 && a_high >= 0 && H5Aread(a_low, H5T_NATIVE_LLONG, &low) >= 0 &&
+            H5Aread(a_high, H5T_NATIVE_LLONG, &high) >= 0) {
+            if (low > 0) start = (hsize_t)(low - 1);
+            if (high > 0) end = (hsize_t)(high - 1);
+            has_range = 1;
+            ctx->any_range = 1;
+        }
+        if (a_low >= 0) H5Aclose(a_low);
+        if (a_high >= 0) H5Aclose(a_high);
+    }
+
+    H5Tclose(t_id);
+    H5Sclose(s_id);
+    H5Dclose(ds_id);
+
+    if (ensure_block_capacity(ctx, ctx->used + 1) < 0) return -1;
+    struct data_block_info* dst = &ctx->blocks[ctx->used++];
+    memset(dst, 0, sizeof(*dst));
+    strncpy(dst->name, name, sizeof(dst->name) - 1);
+    dst->frames = dims[0];
+    dst->start = start;
+    dst->end = has_range ? end : (start + dims[0] - 1);
+    dst->has_range = has_range;
+
+    DEBUGF("discover data_*: %s frames=%llu start=%llu end=%llu via %s\n", name,
+           (unsigned long long)dst->frames, (unsigned long long)dst->start,
+           (unsigned long long)dst->end, has_range ? "image_nr_low/high" : "implicit");
+
+    return 0;
+}
+
 int get_dectris_eiger_dataset_dims(struct ds_desc_t* desc) {
     int retval = 0;
-    int n_datas = 0;
-    int n = 0;
-    int data_width = 0;
-    char ds_name[MAX_NAME_LEN] = {0};
-    int* frame_counts = NULL;
-    hsize_t dims[3] = {0};
     struct eiger_ds_desc_t* eiger_desc = (struct eiger_ds_desc_t*)desc;
+    struct data_block_list ctx = {0};
+    hsize_t total_frames = 0;
 
-    /* Count number of data_xxxxxx datasets */
-    snprintf(ds_name, sizeof(ds_name), "data_%06d", n_datas + 1);
-    while (H5Lexists(desc->data_g_id, ds_name, H5P_DEFAULT) > 0) {
-        snprintf(ds_name, sizeof(ds_name), "data_%06d", ++n_datas + 1);
+    /* Discover all data_* datasets (even if numbering is sparse) */
+    if (H5Literate(desc->data_g_id, H5_INDEX_NAME, H5_ITER_NATIVE, NULL, collect_data_block_cb,
+                   &ctx) < 0) {
+        ERROR_JUMP(-1, done, "Error while iterating data_* datasets");
     }
 
-    frame_counts = malloc(n_datas * sizeof(*frame_counts));
-    if (!frame_counts) {
-        ERROR_JUMP(-1, loop_end, "Out of memory allocating frame counts");
+    if (ctx.used == 0) {
+        ERROR_JUMP(-1, done, "Unable to locate any data_* datasets");
     }
 
-    for (n = 0; n < n_datas; n++) {
-        hid_t ds_id = 0, t_id = 0, s_id = 0;
-        hsize_t block_dims[3] = {0};
-
-        snprintf(ds_name, sizeof(ds_name), "data_%06d", n + 1);
-        ds_id = H5Dopen2(desc->data_g_id, ds_name, H5P_DEFAULT);
-        if (ds_id < 0) {
-            char message[MAX_MSG_LEN];
-            snprintf(message, sizeof(message), "Unable to open dataset %.16s", ds_name);
-            ERROR_JUMP(-1, loop_end, message);
+    /* Order blocks: prefer image_nr_low/high if present, else numeric suffix */
+    if (ctx.any_range) {
+        qsort(ctx.blocks, ctx.used, sizeof(*ctx.blocks), compare_blocks_by_start);
+        /* Fill in missing starts for blocks without image_nr_low */
+        hsize_t next = 0;
+        for (size_t i = 0; i < ctx.used; ++i) {
+            if (!ctx.blocks[i].has_range) {
+                ctx.blocks[i].start = next;
+                ctx.blocks[i].end = next + ctx.blocks[i].frames - 1;
+            }
+            next = ctx.blocks[i].end + 1;
         }
-        DEBUGF("eiger_dataset_dims: opened %s\n", ds_name);
-
-        t_id = H5Dget_type(ds_id);
-        if (t_id < 0) {
-            ERROR_JUMP(-1, close_dataset, "Unable to get datatype");
-        }
-
-        s_id = H5Dget_space(ds_id);
-        if (s_id < 0) {
-            ERROR_JUMP(-1, close_type, "Unable to get dataspace");
-        }
-
-        size_t width = H5Tget_size(t_id);
-        if (width <= 0) {
-            ERROR_JUMP(-1, close_space, "Unable to get type size");
-        }
-        data_width = (int)width;
-
-        int ndims = H5Sget_simple_extent_ndims(s_id);
-        if (ndims != 3) {
-            char message[MAX_MSG_LEN];
-            snprintf(message, sizeof(message), "Dataset %.16s has rank %d, expected 3", ds_name,
-                     ndims);
-            ERROR_JUMP(-1, close_space, message);
-        }
-
-        if (H5Sget_simple_extent_dims(s_id, block_dims, NULL) < 0) {
-            ERROR_JUMP(-1, close_space, "Unable to read dataset dimensions");
-        }
-
-        dims[1] = block_dims[1];
-        dims[2] = block_dims[2];
-        dims[0] += block_dims[0];
-        frame_counts[n] = (int)block_dims[0];
-
-    close_space:
-        H5Sclose(s_id);
-    close_type:
-        H5Tclose(t_id);
-    close_dataset:
-        H5Dclose(ds_id);
-    loop_end:
-        if (retval < 0) break;
-    }
-
-    if (retval < 0) {
-        free(frame_counts);
     } else {
-        memcpy(desc->dims, dims, 3 * sizeof(*dims));
-        desc->data_width = data_width;
-        eiger_desc->n_data_blocks = n_datas;
-        eiger_desc->block_sizes = frame_counts;
-        DEBUGF("eiger_dataset_dims: total frames %llu, dims [%llu %llu], width %d, blocks %d\n",
-               (unsigned long long)dims[0], (unsigned long long)dims[1],
-               (unsigned long long)dims[2], data_width, n_datas);
+        qsort(ctx.blocks, ctx.used, sizeof(*ctx.blocks), compare_blocks_by_index);
+        hsize_t next = 0;
+        for (size_t i = 0; i < ctx.used; ++i) {
+            ctx.blocks[i].start = next;
+            ctx.blocks[i].end = next + ctx.blocks[i].frames - 1;
+            next = ctx.blocks[i].end + 1;
+        }
     }
+
+    eiger_desc->n_data_blocks = (int)ctx.used;
+    eiger_desc->block_sizes = calloc(ctx.used, sizeof(*eiger_desc->block_sizes));
+    eiger_desc->block_starts = calloc(ctx.used, sizeof(*eiger_desc->block_starts));
+    eiger_desc->block_names = calloc(ctx.used, sizeof(*eiger_desc->block_names));
+    if (!eiger_desc->block_sizes || !eiger_desc->block_starts || !eiger_desc->block_names) {
+        ERROR_JUMP(-1, done, "Out of memory allocating block metadata");
+    }
+
+    for (size_t i = 0; i < ctx.used; ++i) {
+        if (ctx.blocks[i].frames > INT_MAX) {
+            ERROR_JUMP(-1, done, "Frame count too large");
+        }
+        eiger_desc->block_sizes[i] = (int)ctx.blocks[i].frames;
+        eiger_desc->block_starts[i] = ctx.blocks[i].start;
+        eiger_desc->block_names[i] = dup_cstr(ctx.blocks[i].name);
+        if (!eiger_desc->block_names[i]) {
+            ERROR_JUMP(-1, done, "Out of memory copying dataset name");
+        }
+        if (ctx.blocks[i].end + 1 > total_frames) total_frames = ctx.blocks[i].end + 1;
+        DEBUGF("block map[%zu]: name=%s frames=%llu start=%llu end=%llu\n", i,
+               eiger_desc->block_names[i], (unsigned long long)ctx.blocks[i].frames,
+               (unsigned long long)ctx.blocks[i].start, (unsigned long long)ctx.blocks[i].end);
+    }
+
+    desc->dims[0] = total_frames;
+    desc->dims[1] = ctx.dim1;
+    desc->dims[2] = ctx.dim2;
+    desc->data_width = ctx.data_width;
+
+    DEBUGF("eiger_dataset_dims: total frames %llu, dims [%llu %llu], width %d, blocks %d (image_nr aware: %s)\n",
+           (unsigned long long)desc->dims[0], (unsigned long long)desc->dims[1],
+           (unsigned long long)desc->dims[2], desc->data_width, eiger_desc->n_data_blocks,
+           ctx.any_range ? "yes" : "no");
+
+done:
+    if (retval < 0) {
+        free(eiger_desc->block_sizes);
+        free(eiger_desc->block_starts);
+        if (eiger_desc->block_names) {
+            for (int i = 0; i < eiger_desc->n_data_blocks; ++i) free(eiger_desc->block_names[i]);
+            free(eiger_desc->block_names);
+        }
+        eiger_desc->block_sizes = NULL;
+        eiger_desc->block_starts = NULL;
+        eiger_desc->block_names = NULL;
+    }
+    free(ctx.blocks);
     return retval;
 }
 

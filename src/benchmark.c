@@ -199,10 +199,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    printf("Metadata Read: %.4fs | Frames: %d | Size: %d x %d | Bytes: %d\n",
-           t_open_end - t_open_start, nframes, nx, ny, nbytes);
+    int mapped_frames = info[5] > 0 ? info[5] : 0;
+    printf("Metadata Read: %.4fs | Frames: %d", t_open_end - t_open_start, nframes);
+    if (mapped_frames > 0 && mapped_frames != nframes) {
+        printf(" (mapped: %d)", mapped_frames);
+    }
+    printf(" | Size: %d x %d | Bytes: %d\n", nx, ny, nbytes);
 
-    int total_frames = (limit_frames > 0 && limit_frames < nframes) ? limit_frames : nframes;
+    int default_frames = mapped_frames > 0 ? mapped_frames : nframes;
+    int total_frames = (limit_frames > 0 && limit_frames < default_frames) ? limit_frames
+                                                                           : default_frames;
     size_t frame_size_bytes = (size_t)nx * (size_t)ny * (size_t)nbytes;
     size_t frame_px = (size_t)nx * (size_t)ny;
 

@@ -88,6 +88,7 @@ fail:
 /* Thread-safe reader that bypasses HDF5 and uses pread() with the fast index. */
 int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf) {
     const struct opt_eiger_ds_desc_t* opt = (const void*)d;
+    size_t expected = (size_t)d->data_width * (size_t)d->dims[1] * (size_t)d->dims[2];
 
     /* Bounds check */
     if (f < 0 || f >= d->dims[0]) return -1;
@@ -95,7 +96,11 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
     struct ParallelFrameIndex* idx = &opt->fast_index[f];
 
     /* Check if index is valid (fd must be > 0) */
-    if (idx->fd <= 0) return -1;
+    if (idx->fd <= 0) {
+        /* Gap in mapping: return a zero-filled frame */
+        memset(buf, 0, expected);
+        return 0;
+    }
 
     /* Allocate LOCAL scratch buffer (Thread Safe) */
     void* local_scratch = malloc(idx->chunk_size);
@@ -108,7 +113,6 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
     if (bytes_read != (ssize_t)idx->chunk_size || idx->chunk_size == 0) {
         retval = -1;
     } else {
-        size_t expected = (size_t)d->data_width * d->dims[1] * d->dims[2];
         if (idx->has_bs_filter) {
             /* Decompress Bitshuffle-LZ4 */
             retval =
@@ -217,5 +221,11 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
     }
     retval = found ? -1 : -2;
 done:
+    if (retval == -2) {
+        /* Gap in mapping: zero-fill the buffer to emulate VDS fill value */
+        size_t expected = (size_t)d->data_width * (size_t)d->dims[1] * (size_t)d->dims[2];
+        memset(buf, 0, expected);
+        return 0;
+    }
     return retval;
 }

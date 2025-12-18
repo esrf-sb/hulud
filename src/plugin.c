@@ -221,6 +221,7 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
     int err = 0;
     int retval = 0;
     double x_pixel_size, y_pixel_size;
+    int physical_frames = 0;
 
     pthread_mutex_lock(&plugin_mutex);
 
@@ -235,6 +236,21 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
     *number_of_frames = data_desc->dims[0];
     *qx = (float)x_pixel_size;
     *qy = (float)y_pixel_size;
+
+    /* Report physical frame count (sum of real datasets) in info[5] for tooling */
+    if (data_desc) {
+        /* Eiger descriptors embed block_sizes */
+        struct eiger_ds_desc_t* eiger_desc = (struct eiger_ds_desc_t*)data_desc;
+        if (eiger_desc->block_sizes && eiger_desc->n_data_blocks > 0) {
+            hsize_t sum = 0;
+            for (int i = 0; i < eiger_desc->n_data_blocks; ++i) sum += (hsize_t)eiger_desc->block_sizes[i];
+            if (sum < INT_MAX) physical_frames = (int)sum;
+        }
+    }
+    if (physical_frames > 0) {
+        info[5] = physical_frames;      /* mapped frames */
+        info[6] = *number_of_frames;    /* logical frames (including gaps) */
+    }
 
 done:
     *error_flag = retval;

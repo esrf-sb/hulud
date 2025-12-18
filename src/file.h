@@ -79,6 +79,8 @@ struct eiger_ds_desc_t {
     struct ds_desc_t base;
     int n_data_blocks;
     int* block_sizes;
+    hsize_t* block_starts; /* 0-based global frame index for each block (uses image_nr_low when available) */
+    char** block_names;    /* dataset names (e.g. data_000123) kept for non-contiguous numbering */
     int (*frame_func)(const struct ds_desc_t*, const char*, const hsize_t*, const hsize_t*, void*);
 };
 
