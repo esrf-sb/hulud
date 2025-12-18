@@ -25,6 +25,105 @@
 #include "readers.h"
 #include "vds_map.h"
 
+int durin_debug_enabled = 0;
+
+#define DEBUGF(fmt, ...)                                       \
+    do {                                                       \
+        if (durin_debug_enabled) {                             \
+            fprintf(stderr, "[DURIN] " fmt, ##__VA_ARGS__);    \
+        }                                                      \
+    } while (0)
+
+/* Local strdup equivalent (POSIX strdup is not always available) */
+static char* dup_cstr(const char* s) {
+    size_t len = strlen(s) + 1;
+    char* out = malloc(len);
+    if (!out) return NULL;
+    memcpy(out, s, len);
+    return out;
+}
+
+static void get_object_path(hid_t id, char* buf, size_t buflen) {
+    if (!buf || buflen == 0) return;
+    if (H5Iget_name(id, buf, buflen) < 0) buf[0] = '\0';
+}
+
+/* Return 1 if opening name as a dataset succeeds (follows external links) */
+static int link_is_dataset(hid_t loc, const char* name) {
+    hid_t d = -1;
+    char gpath[MAX_PATH_LEN] = {0};
+    get_object_path(loc, gpath, sizeof(gpath));
+    H5E_BEGIN_TRY { d = H5Dopen2(loc, name, H5P_DEFAULT); }
+    H5E_END_TRY;
+    if (durin_debug_enabled) {
+        fprintf(stderr, "[DURIN] link_is_dataset: %s/%s => %s\n", gpath[0] ? gpath : "(root)",
+                name, (d >= 0 ? "dataset" : "missing"));
+    }
+    if (d < 0) return 0;
+    H5Dclose(d);
+    return 1;
+}
+
+/* Return an absolute path for an HDF5 file handle, following external links */
+static char* canonical_file_path(hid_t fid, const char* base_dir) {
+    char raw[MAX_PATH_LEN] = {0};
+    char resolved[PATH_MAX] = {0};
+    ssize_t len = H5Fget_name(fid, raw, sizeof(raw));
+
+    /* 1) Absolute path already provided */
+    if (len > 0 && raw[0] == '/') {
+        if (realpath(raw, resolved)) return dup_cstr(resolved);
+        DEBUGF("canonical_file_path: absolute path '%s'\n", resolved[0] ? resolved : raw);
+        return dup_cstr(resolved[0] ? resolved : raw);
+    }
+
+    /* 2) Try resolving the raw string relative to cwd */
+    if (len > 0 && realpath(raw, resolved)) {
+        DEBUGF("canonical_file_path: cwd-resolved '%s'\n", resolved);
+        return dup_cstr(resolved);
+    }
+
+    /* 3) If relative and we know the base directory of the master file, use it */
+    if (len > 0 && base_dir && base_dir[0]) {
+        char combined[PATH_MAX] = {0};
+        size_t len_base = strnlen(base_dir, sizeof(combined) - 1);
+        size_t len_raw = strnlen(raw, sizeof(combined) - 1);
+        if (len_base + len_raw + 1 < sizeof(combined)) {
+            char* dst = combined;
+            memcpy(dst, base_dir, len_base);
+            dst += len_base;
+            if (len_base > 0 && base_dir[len_base - 1] != '/') {
+                *dst++ = '/';
+            }
+            memcpy(dst, raw, len_raw);
+            dst[len_raw] = '\0';
+            if (realpath(combined, resolved)) {
+                DEBUGF("canonical_file_path: base_dir '%s' + '%s' => '%s'\n", base_dir, raw,
+                       resolved);
+                return dup_cstr(resolved);
+            }
+        }
+    }
+
+#ifdef __linux__
+    /* 4) Last resort: ask the kernel for the path of the open file descriptor */
+    void* vfd_handle = NULL;
+    if (H5Fget_vfd_handle(fid, H5P_DEFAULT, &vfd_handle) >= 0 && vfd_handle) {
+        int fd = *(int*)vfd_handle;
+        char proc_path[64] = {0};
+        snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+        if (realpath(proc_path, resolved)) {
+            DEBUGF("canonical_file_path: procfd '%s'\n", resolved);
+            return dup_cstr(resolved);
+        }
+    }
+#endif
+
+    /* Fall back to whatever we have */
+    DEBUGF("canonical_file_path: fallback to raw path '%s'\n", raw);
+    return dup_cstr(raw);
+}
+
 /* --- GPFS/LIMA2 VDS OPTIMIZATION ---
  * Static cache to keep the Virtual Dataset (VDS) handle open.
  * In Lima2, "data_00001" is a VDS pointing to multiple raw files.
@@ -74,6 +173,23 @@ static int build_direct_chunk_map(hid_t data_group_id, struct eiger_ds_desc_t* b
                                   struct opt_eiger_ds_desc_t* opt) {
     int retval = 0;
     hsize_t frame_offset = 0;
+    char master_dir[PATH_MAX] = {0};
+
+    /* Cache the directory of the master file to resolve relative external links */
+    hid_t master_fid = H5Iget_file_id(data_group_id);
+    if (master_fid > 0) {
+        char master_path[MAX_PATH_LEN] = {0};
+        if (H5Fget_name(master_fid, master_path, sizeof(master_path)) > 0) {
+            snprintf(master_dir, sizeof(master_dir), "%s", master_path);
+            char* slash = strrchr(master_dir, '/');
+            if (slash)
+                *slash = '\0';
+            else
+                master_dir[0] = '\0';
+            DEBUGF("direct_chunk_map: master dir '%s'\n", master_dir);
+        }
+        H5Fclose(master_fid);
+    }
 
     opt->frame_map_entries = calloc(base->n_data_blocks, sizeof(struct FrameMapEntry));
     if (!opt->frame_map_entries) return -1;
@@ -117,20 +233,19 @@ static int build_direct_chunk_map(hid_t data_group_id, struct eiger_ds_desc_t* b
             retval = -1;
             break;
         }
-        E->src_dset = strdup(ds_path);
+        E->src_dset = dup_cstr(ds_path);
 
         /* Backing file path (resolved to avoid symlink surprises) */
         hid_t fid = H5Iget_file_id(dset);
-        char file_path[MAX_PATH_LEN] = {0};
-        if (H5Fget_name(fid, file_path, sizeof(file_path)) < 0) {
+        char* canonical_path = canonical_file_path(fid, master_dir);
+        if (!canonical_path) {
             H5Fclose(fid);
             H5Dclose(dset);
             retval = -1;
             break;
         }
-        char resolved[PATH_MAX] = {0};
-        const char* to_store = realpath(file_path, resolved) ? resolved : file_path;
-        E->src_file = strdup(to_store);
+        E->src_file = canonical_path;
+        DEBUGF("direct_chunk_map: %s -> file %s (block %d)\n", ds_path, E->src_file, block + 1);
 
         E->src_file_id = fid;  /* keep ref-counted handle for cleanup */
         E->src_dset_id = dset; /* keep open: used by build_parallel_index */
@@ -259,6 +374,7 @@ int get_nxs_dataset_dims(struct ds_desc_t* desc) {
     if (ds_id <= 0) {
         ERROR_JUMP(-1, done, "Unable to open 'data' dataset");
     }
+    DEBUGF("nxs_dataset_dims: opened 'data'\n");
 
     t_id = H5Dget_type(ds_id);
     if (t_id <= 0) {
@@ -287,6 +403,9 @@ int get_nxs_dataset_dims(struct ds_desc_t* desc) {
     }
 
     desc->data_width = (int)width;
+    DEBUGF("nxs_dataset_dims: dims [%llu %llu %llu], width %d\n",
+           (unsigned long long)desc->dims[0], (unsigned long long)desc->dims[1],
+           (unsigned long long)desc->dims[2], desc->data_width);
 
 close_space:
     H5Sclose(s_id);
@@ -308,6 +427,7 @@ int get_frame_simple(const struct ds_desc_t* desc, const char* name, const hsize
     if (ds_id <= 0) {
         char message[MAX_MSG_LEN];
         snprintf(message, sizeof(message), "Unable to open dataset %.32s", name);
+        DEBUGF("get_frame_simple: failed to open dataset '%s'\n", name);
         ERROR_JUMP(-1, done, message);
     }
     s_id = H5Dget_space(ds_id);
@@ -500,6 +620,7 @@ int get_dectris_eiger_dataset_dims(struct ds_desc_t* desc) {
             snprintf(message, sizeof(message), "Unable to open dataset %.16s", ds_name);
             ERROR_JUMP(-1, loop_end, message);
         }
+        DEBUGF("eiger_dataset_dims: opened %s\n", ds_name);
 
         t_id = H5Dget_type(ds_id);
         if (t_id < 0) {
@@ -551,6 +672,9 @@ int get_dectris_eiger_dataset_dims(struct ds_desc_t* desc) {
         desc->data_width = data_width;
         eiger_desc->n_data_blocks = n_datas;
         eiger_desc->block_sizes = frame_counts;
+        DEBUGF("eiger_dataset_dims: total frames %llu, dims [%llu %llu], width %d, blocks %d\n",
+               (unsigned long long)dims[0], (unsigned long long)dims[1],
+               (unsigned long long)dims[2], data_width, n_datas);
     }
     return retval;
 }
@@ -639,17 +763,106 @@ int get_dectris_eiger_pixel_info(const struct ds_desc_t* desc, double* x_size, d
     return 0;
 }
 
-int get_pixel_mask_impl(hid_t g_id, const char* path, int* buffer) {
+int get_pixel_mask_impl(const struct ds_desc_t* desc, hid_t g_id, const char* path,
+                        int* buffer) {
     int retval = 0;
+    size_t expected_rows = (size_t)desc->dims[1];
+    size_t expected_cols = (size_t)desc->dims[2];
+    size_t expected_elems = expected_rows * expected_cols;
+
     hid_t ds_id = H5Dopen2(g_id, path, H5P_DEFAULT);
     if (ds_id < 0) {
         ERROR_JUMP(-1, done, "Error opening pixel_mask dataset");
     }
+    DEBUGF("pixel_mask: opening %s\n", path);
 
-    if (H5Dread(ds_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, buffer) < 0) {
-        ERROR_JUMP(-1, close_dataset, "Error reading pixel_mask dataset");
+    hid_t s_id = H5Dget_space(ds_id);
+    if (s_id < 0) {
+        ERROR_JUMP(-1, close_dataset, "Error getting pixel_mask dataspace");
     }
 
+    int rank = H5Sget_simple_extent_ndims(s_id);
+    hsize_t dims[3] = {0, 0, 0};
+    if (rank < 0 || rank > 3) {
+        ERROR_JUMP(-1, close_space, "Unsupported pixel_mask rank");
+    }
+    if (H5Sget_simple_extent_dims(s_id, dims, NULL) < 0) {
+        ERROR_JUMP(-1, close_space, "Error getting pixel_mask dimensions");
+    }
+    DEBUGF("pixel_mask: rank %d dims [%llu %llu %llu], expected [%zu %zu]\n", rank,
+           (unsigned long long)dims[0], (unsigned long long)dims[1],
+           (unsigned long long)dims[2], expected_rows, expected_cols);
+
+    /* Prepare selections */
+    hsize_t start_d[3] = {0, 0, 0};
+    hsize_t count_d[3] = {1, 0, 0};
+    hsize_t start_m[3] = {0, 0, 0};
+    hsize_t count_m[3] = {1, 0, 0};
+    hid_t mem_space = H5S_ALL;
+
+    if (rank == 2) {
+        /* Dataset: [rows, cols] */
+        hsize_t read_rows = (dims[0] < expected_rows) ? dims[0] : (hsize_t)expected_rows;
+        hsize_t read_cols = (dims[1] < expected_cols) ? dims[1] : (hsize_t)expected_cols;
+
+        if (H5Sselect_hyperslab(s_id, H5S_SELECT_SET, start_d, NULL,
+                                (hsize_t[]){read_rows, read_cols}, NULL) < 0) {
+            ERROR_JUMP(-1, close_space, "Error selecting pixel_mask hyperslab");
+        }
+
+        hsize_t mem_dims[2] = {(hsize_t)expected_rows, (hsize_t)expected_cols};
+        mem_space = H5Screate_simple(2, mem_dims, NULL);
+        if (mem_space < 0) {
+            ERROR_JUMP(-1, close_space, "Error creating pixel_mask memspace");
+        }
+
+        if (H5Sselect_hyperslab(mem_space, H5S_SELECT_SET, start_m, NULL,
+                                (hsize_t[]){read_rows, read_cols}, NULL) < 0) {
+            ERROR_JUMP(-1, close_memspace, "Error selecting pixel_mask mem hyperslab");
+        }
+
+    } else if (rank == 3) {
+        /* Dataset: [frames, rows, cols] – take first frame */
+        if (dims[0] == 0) {
+            ERROR_JUMP(-1, close_space, "pixel_mask has zero frames");
+        }
+
+        hsize_t read_rows = (dims[1] < expected_rows) ? dims[1] : (hsize_t)expected_rows;
+        hsize_t read_cols = (dims[2] < expected_cols) ? dims[2] : (hsize_t)expected_cols;
+
+        count_d[1] = read_rows;
+        count_d[2] = read_cols;
+        if (H5Sselect_hyperslab(s_id, H5S_SELECT_SET, start_d, NULL, count_d, NULL) < 0) {
+            ERROR_JUMP(-1, close_space, "Error selecting pixel_mask frame hyperslab");
+        }
+
+        hsize_t mem_dims[3] = {1, (hsize_t)expected_rows, (hsize_t)expected_cols};
+        mem_space = H5Screate_simple(3, mem_dims, NULL);
+        if (mem_space < 0) {
+            ERROR_JUMP(-1, close_space, "Error creating pixel_mask memspace");
+        }
+
+        count_m[1] = read_rows;
+        count_m[2] = read_cols;
+        if (H5Sselect_hyperslab(mem_space, H5S_SELECT_SET, start_m, NULL, count_m, NULL) < 0) {
+            ERROR_JUMP(-1, close_memspace, "Error selecting pixel_mask mem hyperslab");
+        }
+    } else {
+        ERROR_JUMP(-1, close_space, "Unsupported pixel_mask rank");
+    }
+
+    /* Zero-fill full frame, then read subset */
+    memset(buffer, 0, expected_elems * sizeof(int));
+
+    if (H5Dread(ds_id, H5T_NATIVE_INT, mem_space, s_id, H5P_DEFAULT, buffer) < 0) {
+        ERROR_JUMP(-1, close_memspace, "Error reading pixel_mask dataset");
+    }
+    DEBUGF("pixel_mask: read %s successfully\n", path);
+
+close_memspace:
+    if (mem_space != H5S_ALL) H5Sclose(mem_space);
+close_space:
+    H5Sclose(s_id);
 close_dataset:
     H5Dclose(ds_id);
 done:
@@ -657,11 +870,11 @@ done:
 }
 
 int get_nxs_pixel_mask(const struct ds_desc_t* desc, int* buffer) {
-    return get_pixel_mask_impl(desc->det_g_id, "pixel_mask", buffer);
+    return get_pixel_mask_impl(desc, desc->det_g_id, "pixel_mask", buffer);
 }
 
 int get_dectris_eiger_pixel_mask(const struct ds_desc_t* desc, int* buffer) {
-    return get_pixel_mask_impl(desc->det_g_id, "detectorSpecific/pixel_mask", buffer);
+    return get_pixel_mask_impl(desc, desc->det_g_id, "detectorSpecific/pixel_mask", buffer);
 }
 
 int get_null_pixel_mask(const struct ds_desc_t* desc, int* buffer) {
@@ -711,10 +924,11 @@ herr_t det_visit_callback(hid_t root_id, const char* name, const H5O_info_t* inf
                     if (strcmp("NXdata", nxclass) == 0) {
                         found_via_nxclass = 1;
                         /* Logic for prioritizing /entry/data or groups with data_000001 */
-                        char full_path[MAX_PATH_LEN] = {0};
-                        ssize_t len = H5Iget_name(g_id, full_path, sizeof(full_path));
-                        int is_entry_data =
-                            (len >= 0 && strncmp(full_path, "/entry/data", 11) == 0);
+        char full_path[MAX_PATH_LEN] = {0};
+        ssize_t len = H5Iget_name(g_id, full_path, sizeof(full_path));
+        DEBUGF("visit: NXdata at %s\n", full_path);
+        int is_entry_data =
+            (len >= 0 && strncmp(full_path, "/entry/data", 11) == 0);
                         int has_data = (H5Lexists(g_id, "data", H5P_DEFAULT) > 0) ||
                                        (H5Lexists(g_id, "data_000001", H5P_DEFAULT) > 0);
 
@@ -740,6 +954,7 @@ herr_t det_visit_callback(hid_t root_id, const char* name, const H5O_info_t* inf
                         found_via_nxclass = 1;
                         char full_path[MAX_PATH_LEN] = {0};
                         ssize_t len = H5Iget_name(g_id, full_path, sizeof(full_path));
+                        DEBUGF("visit: NXdetector at %s\n", full_path);
                         int is_instr =
                             (len >= 0 && strncmp(full_path, "/entry/instrument/detector", 26) == 0);
                         int has_x = (H5Lexists(g_id, "x_pixel_size", H5P_DEFAULT) > 0);
@@ -819,19 +1034,28 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
        3. Check for data_000001 in NXdata
        4. Check for data in NXdata */
 
-    if (g_id > 0 && H5Lexists(g_id, "data_000001", H5P_DEFAULT) > 0) {
+    int g_has_data000001 = (g_id > 0) && link_is_dataset(g_id, "data_000001");
+    int g_has_data = (g_id > 0) && link_is_dataset(g_id, "data");
+    int nx_has_data000001 =
+        (visit_result->nxdata && link_is_dataset(visit_result->nxdata, "data_000001"));
+    int nx_has_data = (visit_result->nxdata && link_is_dataset(visit_result->nxdata, "data"));
+
+    if (g_has_data000001) {
         ds_id = g_id;
         ds_prop_func = &get_dectris_eiger_dataset_dims;
-    } else if (g_id > 0 && H5Lexists(g_id, "data", H5P_DEFAULT) > 0) {
+        DEBUGF("create_dataset_descriptor: using NXdetector/data_000001\n");
+    } else if (g_has_data) {
         ds_id = g_id;
         ds_prop_func = &get_nxs_dataset_dims;
-    } else if (visit_result->nxdata &&
-               H5Lexists(visit_result->nxdata, "data_000001", H5P_DEFAULT) > 0) {
+        DEBUGF("create_dataset_descriptor: using NXdetector/data\n");
+    } else if (nx_has_data000001) {
         ds_id = visit_result->nxdata;
         ds_prop_func = &get_dectris_eiger_dataset_dims;
-    } else if (visit_result->nxdata && H5Lexists(visit_result->nxdata, "data", H5P_DEFAULT) > 0) {
+        DEBUGF("create_dataset_descriptor: using NXdata/data_000001\n");
+    } else if (nx_has_data) {
         ds_id = visit_result->nxdata;
         ds_prop_func = &get_nxs_dataset_dims;
+        DEBUGF("create_dataset_descriptor: using NXdata/data\n");
     } else {
         ERROR_JUMP(-1, done, "Could not locate DATA dataset");
     }
@@ -839,8 +1063,10 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
     /* Strategy for Pixel Properties */
     if (g_id > 0 && H5Lexists(g_id, "x_pixel_size", H5P_DEFAULT) > 0) {
         pxl_func = &get_nxs_pixel_info;
+        DEBUGF("create_dataset_descriptor: pixel info via x_pixel_size\n");
     } else if (g_id > 0 && H5Lexists(g_id, "detectorSpecific", H5P_DEFAULT) > 0) {
         pxl_func = &get_dectris_eiger_pixel_info;
+        DEBUGF("create_dataset_descriptor: pixel info via detectorSpecific\n");
     } else {
         ERROR_JUMP(-1, done, "Could not locate x/y pixel_size");
     }
@@ -848,10 +1074,13 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
     /* Strategy for Pixel Mask */
     if (g_id > 0 && H5Lexists(g_id, "pixel_mask", H5P_DEFAULT) > 0) {
         pxl_mask_func = &get_nxs_pixel_mask;
+        DEBUGF("create_dataset_descriptor: pixel mask via pixel_mask\n");
     } else if (g_id > 0 && H5Lexists(g_id, "detectorSpecific/pixel_mask", H5P_DEFAULT) > 0) {
         pxl_mask_func = &get_dectris_eiger_pixel_mask;
+        DEBUGF("create_dataset_descriptor: pixel mask via detectorSpecific/pixel_mask\n");
     } else {
         pxl_mask_func = &get_null_pixel_mask;
+        DEBUGF("create_dataset_descriptor: no pixel mask found, using null mask\n");
     }
 
     /* --- INSTANTIATION --- */
@@ -990,7 +1219,10 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
         output = *desc;
         output->det_g_id = g_id;
         output->data_g_id = ds_id;
-        ds_prop_func(output);
+        retval = ds_prop_func(output);
+        if (retval < 0) {
+            ERROR_JUMP(retval, done, "Failed to read dataset properties");
+        }
         output->get_data_frame = &get_nxs_frame;
     }
 
@@ -1015,6 +1247,16 @@ int get_detector_info(const hid_t fid, struct ds_desc_t** desc) {
 
     if (objects.nxdata == 0) fprintf(stderr, "WARNING: Could not locate an NXdata entry\n");
     if (objects.nxdetector == 0) fprintf(stderr, "WARNING: Could not locate an NXdetector entry\n");
+    if (durin_debug_enabled) {
+        char nxdata_path[MAX_PATH_LEN] = {0};
+        char nxdet_path[MAX_PATH_LEN] = {0};
+        if (objects.nxdata > 0) get_object_path(objects.nxdata, nxdata_path, sizeof(nxdata_path));
+        if (objects.nxdetector > 0)
+            get_object_path(objects.nxdetector, nxdet_path, sizeof(nxdet_path));
+        fprintf(stderr, "[DURIN] detector_info: NXdata=%s NXdetector=%s\n",
+                nxdata_path[0] ? nxdata_path : "(none)",
+                nxdet_path[0] ? nxdet_path : "(none)");
+    }
 
     if ((retval = create_dataset_descriptor(desc, &objects)) < 0) {
         ERROR_JUMP(retval, done, "");

@@ -22,6 +22,9 @@ struct ds_desc_t;
 struct eiger_ds_desc_t;
 struct opt_eiger_ds_desc_t;
 
+/* Debug flag set by plugin_open (DURIN_DEBUG env var) */
+extern int durin_debug_enabled;
+
 /* --- NEW: Parallel Index Struct --- */
 /* Stores pre-calculated file location for a single frame to allow lock-free reading */
 struct ParallelFrameIndex {
