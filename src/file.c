@@ -168,9 +168,9 @@ static int populate_filter_flags(hid_t dset, struct FrameMapEntry* entry) {
     return 0;
 }
 
-/* Build a minimal FrameMapEntry array for non-VDS, chunked Eiger datasets */
-static int build_direct_chunk_map(hid_t data_group_id, struct eiger_ds_desc_t* base,
-                                  struct opt_eiger_ds_desc_t* opt) {
+/* Build a minimal FrameMapEntry array for non-VDS, chunked Pilatus datasets */
+static int build_direct_chunk_map(hid_t data_group_id, struct pilatus_ds_desc_t* base,
+                                  struct opt_pilatus_ds_desc_t* opt) {
     int retval = 0;
     hsize_t frame_offset = 0;
     char master_dir[PATH_MAX] = {0};
@@ -333,8 +333,8 @@ void free_ds_desc(struct ds_desc_t* desc) {
 
 void free_nxs_desc(struct ds_desc_t* desc) { free_ds_desc(desc); }
 
-void free_eiger_desc(struct ds_desc_t* desc) {
-    struct eiger_ds_desc_t* e_desc = (struct eiger_ds_desc_t*)desc;
+void free_pilatus_desc(struct ds_desc_t* desc) {
+    struct pilatus_ds_desc_t* e_desc = (struct pilatus_ds_desc_t*)desc;
     if (e_desc) {
         free(e_desc->block_sizes);
         free(e_desc->block_starts);
@@ -346,8 +346,8 @@ void free_eiger_desc(struct ds_desc_t* desc) {
     free_ds_desc(desc);
 }
 
-void free_opt_eiger_desc(struct ds_desc_t* desc) {
-    struct opt_eiger_ds_desc_t* opt_desc = (struct opt_eiger_ds_desc_t*)desc;
+void free_opt_pilatus_desc(struct ds_desc_t* desc) {
+    struct opt_pilatus_ds_desc_t* opt_desc = (struct opt_pilatus_ds_desc_t*)desc;
     if (!opt_desc) return;
 
     reset_dataset_cache();
@@ -573,9 +573,9 @@ done:
     return retval;
 }
 
-int get_dectris_eiger_frame(const struct ds_desc_t* desc, int n, void* buffer) {
+int get_dectris_pilatus_frame(const struct ds_desc_t* desc, int n, void* buffer) {
     int retval = 0;
-    struct eiger_ds_desc_t* eiger_desc = (struct eiger_ds_desc_t*)desc;
+    struct pilatus_ds_desc_t* pilatus_desc = (struct pilatus_ds_desc_t*)desc;
     char data_name[MAX_NAME_LEN] = {0};
     hsize_t frame_idx[3] = {0, 0, 0};
     hsize_t frame_size[3] = {1, desc->dims[1], desc->dims[2]};
@@ -591,10 +591,10 @@ int get_dectris_eiger_frame(const struct ds_desc_t* desc, int n, void* buffer) {
     int block = -1;
     hsize_t frame_offset = 0;
 
-    if (eiger_desc->block_starts) {
-        for (int i = 0; i < eiger_desc->n_data_blocks; ++i) {
-            hsize_t start = eiger_desc->block_starts[i];
-            hsize_t end = start + (hsize_t)eiger_desc->block_sizes[i] - 1;
+    if (pilatus_desc->block_starts) {
+        for (int i = 0; i < pilatus_desc->n_data_blocks; ++i) {
+            hsize_t start = pilatus_desc->block_starts[i];
+            hsize_t end = start + (hsize_t)pilatus_desc->block_sizes[i] - 1;
             if ((hsize_t)n >= start && (hsize_t)n <= end) {
                 block = i;
                 frame_offset = start;
@@ -603,11 +603,11 @@ int get_dectris_eiger_frame(const struct ds_desc_t* desc, int n, void* buffer) {
         }
     } else {
         hsize_t frame_count = 0;
-        for (int i = 0; i < eiger_desc->n_data_blocks; ++i) {
-            frame_count += (hsize_t)eiger_desc->block_sizes[i];
+        for (int i = 0; i < pilatus_desc->n_data_blocks; ++i) {
+            frame_count += (hsize_t)pilatus_desc->block_sizes[i];
             if (frame_count > (hsize_t)n) {
                 block = i;
-                frame_offset = frame_count - (hsize_t)eiger_desc->block_sizes[i];
+                frame_offset = frame_count - (hsize_t)pilatus_desc->block_sizes[i];
                 break;
             }
         }
@@ -622,13 +622,13 @@ int get_dectris_eiger_frame(const struct ds_desc_t* desc, int n, void* buffer) {
     int idx = n - (int)frame_offset;
     frame_idx[0] = idx;
 
-    if (eiger_desc->block_names && eiger_desc->block_names[block]) {
-        snprintf(data_name, sizeof(data_name), "%s", eiger_desc->block_names[block]);
+    if (pilatus_desc->block_names && pilatus_desc->block_names[block]) {
+        snprintf(data_name, sizeof(data_name), "%s", pilatus_desc->block_names[block]);
     } else {
         snprintf(data_name, sizeof(data_name), "data_%06d", block + 1);
     }
 
-    retval = eiger_desc->frame_func(desc, data_name, frame_idx, frame_size, buffer);
+    retval = pilatus_desc->frame_func(desc, data_name, frame_idx, frame_size, buffer);
     if (retval < 0) {
         ERROR_JUMP(retval, done, "");
     }
@@ -636,7 +636,7 @@ done:
     return retval;
 }
 
-/* --- Eiger dataset discovery (handles gaps using image_nr_low/high) --- */
+/* --- Pilatus dataset discovery (handles gaps using image_nr_low/high) --- */
 
 struct data_block_info {
     char name[MAX_NAME_LEN];
@@ -792,9 +792,9 @@ static herr_t collect_data_block_cb(hid_t g_id, const char* name, const H5L_info
     return 0;
 }
 
-int get_dectris_eiger_dataset_dims(struct ds_desc_t* desc) {
+int get_dectris_pilatus_dataset_dims(struct ds_desc_t* desc) {
     int retval = 0;
-    struct eiger_ds_desc_t* eiger_desc = (struct eiger_ds_desc_t*)desc;
+    struct pilatus_ds_desc_t* pilatus_desc = (struct pilatus_ds_desc_t*)desc;
     struct data_block_list ctx = {0};
     hsize_t total_frames = 0;
 
@@ -830,11 +830,11 @@ int get_dectris_eiger_dataset_dims(struct ds_desc_t* desc) {
         }
     }
 
-    eiger_desc->n_data_blocks = (int)ctx.used;
-    eiger_desc->block_sizes = calloc(ctx.used, sizeof(*eiger_desc->block_sizes));
-    eiger_desc->block_starts = calloc(ctx.used, sizeof(*eiger_desc->block_starts));
-    eiger_desc->block_names = calloc(ctx.used, sizeof(*eiger_desc->block_names));
-    if (!eiger_desc->block_sizes || !eiger_desc->block_starts || !eiger_desc->block_names) {
+    pilatus_desc->n_data_blocks = (int)ctx.used;
+    pilatus_desc->block_sizes = calloc(ctx.used, sizeof(*pilatus_desc->block_sizes));
+    pilatus_desc->block_starts = calloc(ctx.used, sizeof(*pilatus_desc->block_starts));
+    pilatus_desc->block_names = calloc(ctx.used, sizeof(*pilatus_desc->block_names));
+    if (!pilatus_desc->block_sizes || !pilatus_desc->block_starts || !pilatus_desc->block_names) {
         ERROR_JUMP(-1, done, "Out of memory allocating block metadata");
     }
 
@@ -842,15 +842,15 @@ int get_dectris_eiger_dataset_dims(struct ds_desc_t* desc) {
         if (ctx.blocks[i].frames > INT_MAX) {
             ERROR_JUMP(-1, done, "Frame count too large");
         }
-        eiger_desc->block_sizes[i] = (int)ctx.blocks[i].frames;
-        eiger_desc->block_starts[i] = ctx.blocks[i].start;
-        eiger_desc->block_names[i] = dup_cstr(ctx.blocks[i].name);
-        if (!eiger_desc->block_names[i]) {
+        pilatus_desc->block_sizes[i] = (int)ctx.blocks[i].frames;
+        pilatus_desc->block_starts[i] = ctx.blocks[i].start;
+        pilatus_desc->block_names[i] = dup_cstr(ctx.blocks[i].name);
+        if (!pilatus_desc->block_names[i]) {
             ERROR_JUMP(-1, done, "Out of memory copying dataset name");
         }
         if (ctx.blocks[i].end + 1 > total_frames) total_frames = ctx.blocks[i].end + 1;
         DEBUGF("block map[%zu]: name=%s frames=%llu start=%llu end=%llu\n", i,
-               eiger_desc->block_names[i], (unsigned long long)ctx.blocks[i].frames,
+               pilatus_desc->block_names[i], (unsigned long long)ctx.blocks[i].frames,
                (unsigned long long)ctx.blocks[i].start, (unsigned long long)ctx.blocks[i].end);
     }
 
@@ -859,22 +859,22 @@ int get_dectris_eiger_dataset_dims(struct ds_desc_t* desc) {
     desc->dims[2] = ctx.dim2;
     desc->data_width = ctx.data_width;
 
-    DEBUGF("eiger_dataset_dims: total frames %llu, dims [%llu %llu], width %d, blocks %d (image_nr aware: %s)\n",
+    DEBUGF("pilatus_dataset_dims: total frames %llu, dims [%llu %llu], width %d, blocks %d (image_nr aware: %s)\n",
            (unsigned long long)desc->dims[0], (unsigned long long)desc->dims[1],
-           (unsigned long long)desc->dims[2], desc->data_width, eiger_desc->n_data_blocks,
+           (unsigned long long)desc->dims[2], desc->data_width, pilatus_desc->n_data_blocks,
            ctx.any_range ? "yes" : "no");
 
 done:
     if (retval < 0) {
-        free(eiger_desc->block_sizes);
-        free(eiger_desc->block_starts);
-        if (eiger_desc->block_names) {
-            for (int i = 0; i < eiger_desc->n_data_blocks; ++i) free(eiger_desc->block_names[i]);
-            free(eiger_desc->block_names);
+        free(pilatus_desc->block_sizes);
+        free(pilatus_desc->block_starts);
+        if (pilatus_desc->block_names) {
+            for (int i = 0; i < pilatus_desc->n_data_blocks; ++i) free(pilatus_desc->block_names[i]);
+            free(pilatus_desc->block_names);
         }
-        eiger_desc->block_sizes = NULL;
-        eiger_desc->block_starts = NULL;
-        eiger_desc->block_names = NULL;
+        pilatus_desc->block_sizes = NULL;
+        pilatus_desc->block_starts = NULL;
+        pilatus_desc->block_names = NULL;
     }
     free(ctx.blocks);
     return retval;
@@ -958,7 +958,7 @@ int get_nxs_pixel_info(const struct ds_desc_t* desc, double* x_size, double* y_s
     return 0;
 }
 
-int get_dectris_eiger_pixel_info(const struct ds_desc_t* desc, double* x_size, double* y_size) {
+int get_dectris_pilatus_pixel_info(const struct ds_desc_t* desc, double* x_size, double* y_size) {
     if (read_pixel_info(desc->det_g_id, "detectorSpecific/x_pixel_size", x_size) < 0) return -1;
     if (read_pixel_info(desc->det_g_id, "detectorSpecific/y_pixel_size", y_size) < 0) return -1;
     return 0;
@@ -1073,7 +1073,7 @@ int get_nxs_pixel_mask(const struct ds_desc_t* desc, int* buffer) {
     return get_pixel_mask_impl(desc, desc->det_g_id, "pixel_mask", buffer);
 }
 
-int get_dectris_eiger_pixel_mask(const struct ds_desc_t* desc, int* buffer) {
+int get_dectris_pilatus_pixel_mask(const struct ds_desc_t* desc, int* buffer) {
     return get_pixel_mask_impl(desc, desc->det_g_id, "detectorSpecific/pixel_mask", buffer);
 }
 
@@ -1222,7 +1222,7 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
     void (*free_func)(struct ds_desc_t*) = NULL;
     struct ds_desc_t* output = NULL;
 
-    /* Build the appropriate descriptor (Eiger VDS/direct, or standard NXS). */
+    /* Build the appropriate descriptor (Pilatus VDS/direct, or standard NXS). */
     /* Use NXdetector for pixel properties */
     g_id = visit_result->nxdetector;
 
@@ -1230,7 +1230,7 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
     ds_id = -1;
 
     /* Strategy:
-       1. Check for data_000001 (Eiger style) in NXdetector
+       1. Check for data_000001 (Pilatus style) in NXdetector
        2. Check for data (Standard) in NXdetector
        3. Check for data_000001 in NXdata
        4. Check for data in NXdata */
@@ -1243,7 +1243,7 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
 
     if (g_has_data000001) {
         ds_id = g_id;
-        ds_prop_func = &get_dectris_eiger_dataset_dims;
+        ds_prop_func = &get_dectris_pilatus_dataset_dims;
         DEBUGF("create_dataset_descriptor: using NXdetector/data_000001\n");
     } else if (g_has_data) {
         ds_id = g_id;
@@ -1251,7 +1251,7 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
         DEBUGF("create_dataset_descriptor: using NXdetector/data\n");
     } else if (nx_has_data000001) {
         ds_id = visit_result->nxdata;
-        ds_prop_func = &get_dectris_eiger_dataset_dims;
+        ds_prop_func = &get_dectris_pilatus_dataset_dims;
         DEBUGF("create_dataset_descriptor: using NXdata/data_000001\n");
     } else if (nx_has_data) {
         ds_id = visit_result->nxdata;
@@ -1266,7 +1266,7 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
         pxl_func = &get_nxs_pixel_info;
         DEBUGF("create_dataset_descriptor: pixel info via x_pixel_size\n");
     } else if (g_id > 0 && H5Lexists(g_id, "detectorSpecific", H5P_DEFAULT) > 0) {
-        pxl_func = &get_dectris_eiger_pixel_info;
+        pxl_func = &get_dectris_pilatus_pixel_info;
         DEBUGF("create_dataset_descriptor: pixel info via detectorSpecific\n");
     } else {
         ERROR_JUMP(-1, done, "Could not locate x/y pixel_size");
@@ -1277,7 +1277,7 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
         pxl_mask_func = &get_nxs_pixel_mask;
         DEBUGF("create_dataset_descriptor: pixel mask via pixel_mask\n");
     } else if (g_id > 0 && H5Lexists(g_id, "detectorSpecific/pixel_mask", H5P_DEFAULT) > 0) {
-        pxl_mask_func = &get_dectris_eiger_pixel_mask;
+        pxl_mask_func = &get_dectris_pilatus_pixel_mask;
         DEBUGF("create_dataset_descriptor: pixel mask via detectorSpecific/pixel_mask\n");
     } else {
         pxl_mask_func = &get_null_pixel_mask;
@@ -1285,18 +1285,18 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
     }
 
     /* --- INSTANTIATION --- */
-    if (ds_prop_func == &get_dectris_eiger_dataset_dims) {
-        /* Eiger / VDS handling */
-        struct eiger_ds_desc_t* eiger_desc = calloc(1, sizeof(struct eiger_ds_desc_t));
-        struct opt_eiger_ds_desc_t* opt = calloc(1, sizeof(struct opt_eiger_ds_desc_t));
+    if (ds_prop_func == &get_dectris_pilatus_dataset_dims) {
+        /* Pilatus / VDS handling */
+        struct pilatus_ds_desc_t* pilatus_desc = calloc(1, sizeof(struct pilatus_ds_desc_t));
+        struct opt_pilatus_ds_desc_t* opt = calloc(1, sizeof(struct opt_pilatus_ds_desc_t));
 
-        if (!eiger_desc || !opt) {
-            free(eiger_desc);
+        if (!pilatus_desc || !opt) {
+            free(pilatus_desc);
             free(opt);
-            ERROR_JUMP(-1, done, "Out of memory creating Eiger descriptors");
+            ERROR_JUMP(-1, done, "Out of memory creating Pilatus descriptors");
         }
 
-        eiger_desc->frame_func = &get_frame_simple;
+        pilatus_desc->frame_func = &get_frame_simple;
         opt->base.frame_func = &get_frame_from_chunk;
 
         /* Check if VDS optimization is needed */
@@ -1334,9 +1334,9 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
             }
 
             /* Build the optimized map */
-            if (build_vds_mapping(ds_id, master_dir, opt, eiger_desc) < 0) {
+            if (build_vds_mapping(ds_id, master_dir, opt, pilatus_desc) < 0) {
                 free(opt);
-                /* eiger_desc is usually freed inside build_vds_mapping on success */
+                /* pilatus_desc is usually freed inside build_vds_mapping on success */
                 ERROR_JUMP(-1, done, "Failed to build VDS mapping");
             }
 
@@ -1350,8 +1350,8 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
                 ERROR_JUMP(-1, done, "Failed to build parallel index");
             }
 
-            *(struct opt_eiger_ds_desc_t**)desc = opt;
-            free_func = &free_opt_eiger_desc;
+            *(struct opt_pilatus_ds_desc_t**)desc = opt;
+            free_func = &free_opt_pilatus_desc;
             output = (struct ds_desc_t*)opt;
 
             /* 2. Assign the THREAD-SAFE reader function */
@@ -1360,20 +1360,20 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
             /* ----------------------------------------------------------- */
 
         } else {
-            /* Standard Eiger (non-VDS) */
+            /* Standard Pilatus (non-VDS) */
             int fast_ready = 0;
 
             /* Populate sizes before attempting a fast-path */
-            eiger_desc->base.det_g_id = g_id;
-            eiger_desc->base.data_g_id = ds_id;
-            ds_prop_func((struct ds_desc_t*)eiger_desc);
+            pilatus_desc->base.det_g_id = g_id;
+            pilatus_desc->base.data_g_id = ds_id;
+            ds_prop_func((struct ds_desc_t*)pilatus_desc);
 
-            if (build_direct_chunk_map(ds_id, eiger_desc, opt) == 0) {
-                opt->base = *eiger_desc; /* copy dims/block_sizes ownership to opt */
+            if (build_direct_chunk_map(ds_id, pilatus_desc, opt) == 0) {
+                opt->base = *pilatus_desc; /* copy dims/block_sizes ownership to opt */
 
                 if (build_parallel_index(opt) == 0) {
                     fast_ready = 1;
-                    free(eiger_desc); /* block_sizes now owned by opt->base */
+                    free(pilatus_desc); /* block_sizes now owned by opt->base */
                 } else {
                     /* Drop partial fast-path state without freeing block_sizes */
                     if (opt->fast_index) {
@@ -1397,16 +1397,16 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
             }
 
             if (fast_ready) {
-                *(struct opt_eiger_ds_desc_t**)desc = opt;
-                free_func = &free_opt_eiger_desc;
+                *(struct opt_pilatus_ds_desc_t**)desc = opt;
+                free_func = &free_opt_pilatus_desc;
                 output = (struct ds_desc_t*)opt;
                 output->get_data_frame = &get_virtual_frame_parallel;
             } else {
                 free(opt);
-                *(struct eiger_ds_desc_t**)desc = eiger_desc;
-                free_func = &free_eiger_desc;
-                output = (struct ds_desc_t*)eiger_desc;
-                output->get_data_frame = &get_dectris_eiger_frame;
+                *(struct pilatus_ds_desc_t**)desc = pilatus_desc;
+                free_func = &free_pilatus_desc;
+                output = (struct ds_desc_t*)pilatus_desc;
+                output->get_data_frame = &get_dectris_pilatus_frame;
             }
 
             output->det_g_id = g_id;

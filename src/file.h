@@ -18,8 +18,8 @@
 #endif
 
 struct ds_desc_t;
-struct eiger_ds_desc_t;
-struct opt_eiger_ds_desc_t;
+struct pilatus_ds_desc_t;
+struct opt_pilatus_ds_desc_t;
 
 extern int durin_debug_enabled;
 
@@ -74,8 +74,8 @@ struct ds_desc_t {
     void (*free_desc)(struct ds_desc_t*);
 };
 
-/* Used for standard Eiger & chunk-read path */
-struct eiger_ds_desc_t {
+/* Used for standard Pilatus & chunk-read path */
+struct pilatus_ds_desc_t {
     struct ds_desc_t base;
     int n_data_blocks;
     int* block_sizes;
@@ -88,9 +88,9 @@ struct nxs_ds_desc_t {
     struct ds_desc_t base;
 };
 
-/* Extended Eiger descriptor with VDS bypass */
-struct opt_eiger_ds_desc_t {
-    struct eiger_ds_desc_t base;
+/* Extended Pilatus descriptor with VDS bypass */
+struct opt_pilatus_ds_desc_t {
+    struct pilatus_ds_desc_t base;
 
     int is_virtual;
     int n_map_entries;
@@ -102,7 +102,7 @@ struct opt_eiger_ds_desc_t {
 /** HDF5-based fallback reader for a mapped frame. */
 int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf);
 /** Build fast chunk index for parallel raw access. */
-int build_parallel_index(struct opt_eiger_ds_desc_t* opt);
+int build_parallel_index(struct opt_pilatus_ds_desc_t* opt);
 /** Thread-safe raw reader that uses the fast index. */
 int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf);
 

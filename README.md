@@ -1,11 +1,11 @@
 Durin
 =====
 
-XDS plugin for reading HDF5 files following the NeXuS format or those written by Dectris Eiger detectors.
+XDS plugin for reading HDF5 files following the NeXuS format or those written by Dectris Pilatus detectors.
 
 See:
 * https://www.nexusformat.org
-* https://www.dectris.com/features/features-eiger-x/hdf5-and-nexus
+* https://www.dectris.com/products/pilatus3
 * https://strucbio.biologie.uni-konstanz.de/xdswiki
 
 ## Get Durin
@@ -19,7 +19,7 @@ LIB=[path to durin-plugin.so]
 NAME_TEMPLATE_OF_DATA_FRAMES=[data_path]/data_images_??????.h5
 ```
 XDS will instruct the plugin to load `[data_path]/data_images_master.h5` and this must be the
-Eiger master file or the NeXus file for the data collection.
+Pilatus master file or the NeXus file for the data collection.
 
 It is generally assumed that the files `[data_path]/data_images_data_xxxxxx.h5` contain the actual
 datasets and the master file contains HDF5 external links to these, but that is not required, so long as

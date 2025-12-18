@@ -85,7 +85,7 @@ static void set_direct_flags(struct FrameMapEntry* E, hid_t sp) {
 
 static int append_leaf(struct MapBuilder* b, const char* src_full, const char* src_dset_name,
                        hid_t src_f, hid_t src_d, hsize_t v_start, hsize_t v_end, hsize_t s_start,
-                       hsize_t s_end, struct opt_eiger_ds_desc_t* opt, int* data_width_set) {
+                       hsize_t s_end, struct opt_pilatus_ds_desc_t* opt, int* data_width_set) {
     if (v_start >= opt->base.base.dims[0]) return 0;
     hsize_t src_dims[3] = {0};
     hid_t spc = H5Dget_space(src_d);
@@ -132,7 +132,7 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
 
 /* Recursive flatten of a mapping entry */
 static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, hid_t plist,
-                           size_t map_idx, hsize_t outer_v_offset, struct opt_eiger_ds_desc_t* opt,
+                           size_t map_idx, hsize_t outer_v_offset, struct opt_pilatus_ds_desc_t* opt,
                            int* data_width_set) {
     ssize_t fl = H5Pget_virtual_filename(plist, map_idx, NULL, 0);
     char* src_file_rel = calloc(fl + 1, 1);
@@ -226,8 +226,8 @@ static int compare_frame_map_local(const void* a, const void* b) {
     return (A->vds_start > B->vds_start) - (A->vds_start < B->vds_start);
 }
 
-int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_desc_t* opt,
-                      struct eiger_ds_desc_t* eiger_desc_to_free) {
+int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_pilatus_ds_desc_t* opt,
+                      struct pilatus_ds_desc_t* pilatus_desc_to_free) {
     int retval = 0;
     struct MapBuilder builder = {0};
     struct VdsBlockInfo {
@@ -357,7 +357,7 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_d
         builder.used = keep;
         opt->frame_map_entries = builder.entries;
         opt->n_map_entries = (int)builder.used;
-        if (eiger_desc_to_free) free(eiger_desc_to_free);
+        if (pilatus_desc_to_free) free(pilatus_desc_to_free);
     } else {
         free(builder.entries);
     }

@@ -14,7 +14,7 @@
 #include "filters.h"
 
 /* Build the fast index of raw chunk offsets for every mapped frame. */
-int build_parallel_index(struct opt_eiger_ds_desc_t* opt) {
+int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
     int retval = 0;
     int total_frames = opt->base.base.dims[0];
     int* entry_fds = calloc((size_t)opt->n_map_entries, sizeof(int));
@@ -34,7 +34,7 @@ int build_parallel_index(struct opt_eiger_ds_desc_t* opt) {
         int fd = open(E->src_file, O_RDONLY);
         if (fd < 0) {
             fprintf(stderr, "[DURIN] Failed to open raw file for parallel read: %s\n", E->src_file);
-            /* Cleanup will happen in free_opt_eiger_desc */
+            /* Cleanup will happen in free_opt_pilatus_desc */
             retval = -1;
             goto fail;
         }
@@ -87,7 +87,7 @@ fail:
 
 /* Thread-safe reader that bypasses HDF5 and uses pread() with the fast index. */
 int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf) {
-    const struct opt_eiger_ds_desc_t* opt = (const void*)d;
+    const struct opt_pilatus_ds_desc_t* opt = (const void*)d;
     size_t expected = (size_t)d->data_width * (size_t)d->dims[1] * (size_t)d->dims[2];
 
     /* Bounds check */
@@ -133,7 +133,7 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
 
 /* Fallback HDF5-based reader, used when the fast path is not available. */
 int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
-    const struct opt_eiger_ds_desc_t* opt = (const void*)d;
+    const struct opt_pilatus_ds_desc_t* opt = (const void*)d;
 
     int found = 0;
     int retval = -2; /* default: no mapping found */

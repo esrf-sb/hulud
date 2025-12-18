@@ -239,11 +239,11 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
 
     /* Report physical frame count (sum of real datasets) in info[5] for tooling */
     if (data_desc) {
-        /* Eiger descriptors embed block_sizes */
-        struct eiger_ds_desc_t* eiger_desc = (struct eiger_ds_desc_t*)data_desc;
-        if (eiger_desc->block_sizes && eiger_desc->n_data_blocks > 0) {
+        /* Pilatus descriptors embed block_sizes */
+        struct pilatus_ds_desc_t* pilatus_desc = (struct pilatus_ds_desc_t*)data_desc;
+        if (pilatus_desc->block_sizes && pilatus_desc->n_data_blocks > 0) {
             hsize_t sum = 0;
-            for (int i = 0; i < eiger_desc->n_data_blocks; ++i) sum += (hsize_t)eiger_desc->block_sizes[i];
+            for (int i = 0; i < pilatus_desc->n_data_blocks; ++i) sum += (hsize_t)pilatus_desc->block_sizes[i];
             if (sum < INT_MAX) physical_frames = (int)sum;
         }
     }
