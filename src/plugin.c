@@ -7,8 +7,8 @@
 
 #include <hdf5.h>
 #include <pthread.h>
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -131,6 +131,11 @@ done:
 extern "C" {
 #endif
 
+/**
+ * Open an HDF5 master file and prepare the plugin state.
+ * Fills version info, configures HDF5 error handling, and builds the detector
+ * descriptor (including optional pixel mask).
+ */
 void plugin_open(const char* filename, int info[1024], int* error_flag) {
     int retval = 0;
     *error_flag = 0;
@@ -208,8 +213,11 @@ done:
     }
 }
 
-void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy, int* number_of_frames,
-                       int info[1024], int* error_flag) {
+/**
+ * Retrieve detector geometry and frame count from the open descriptor.
+ */
+void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
+                       int* number_of_frames, int info[1024], int* error_flag) {
     int err = 0;
     int retval = 0;
     double x_pixel_size, y_pixel_size;
@@ -236,6 +244,10 @@ done:
     }
 }
 
+/**
+ * Read a frame (1-based index) into the caller-provided buffer.
+ * Uses the fast path when possible; otherwise protects HDF5 calls with a mutex.
+ */
 void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int info[1024],
                      int* error_flag) {
     int retval = 0;
@@ -303,6 +315,9 @@ done:
     if (need_lock) pthread_mutex_unlock(&plugin_mutex);
 }
 
+/**
+ * Close all plugin resources and release HDF5 handles.
+ */
 void plugin_close(int* error_flag) {
     pthread_mutex_lock(&plugin_mutex);
     data_reader_thread_safe = 0;

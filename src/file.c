@@ -27,11 +27,11 @@
 
 int durin_debug_enabled = 0;
 
-#define DEBUGF(fmt, ...)                                       \
-    do {                                                       \
-        if (durin_debug_enabled) {                             \
-            fprintf(stderr, "[DURIN] " fmt, ##__VA_ARGS__);    \
-        }                                                      \
+#define DEBUGF(fmt, ...)                                    \
+    do {                                                    \
+        if (durin_debug_enabled) {                          \
+            fprintf(stderr, "[DURIN] " fmt, ##__VA_ARGS__); \
+        }                                                   \
     } while (0)
 
 /* Local strdup equivalent (POSIX strdup is not always available) */
@@ -56,8 +56,8 @@ static int link_is_dataset(hid_t loc, const char* name) {
     H5E_BEGIN_TRY { d = H5Dopen2(loc, name, H5P_DEFAULT); }
     H5E_END_TRY;
     if (durin_debug_enabled) {
-        fprintf(stderr, "[DURIN] link_is_dataset: %s/%s => %s\n", gpath[0] ? gpath : "(root)",
-                name, (d >= 0 ? "dataset" : "missing"));
+        fprintf(stderr, "[DURIN] link_is_dataset: %s/%s => %s\n", gpath[0] ? gpath : "(root)", name,
+                (d >= 0 ? "dataset" : "missing"));
     }
     if (d < 0) return 0;
     H5Dclose(d);
@@ -370,6 +370,7 @@ int get_nxs_dataset_dims(struct ds_desc_t* desc) {
     int retval = 0;
     int ndims = 0;
 
+    /* Read dimensions and element width for a standard 3D Nexus dataset at "data". */
     ds_id = H5Dopen2(desc->data_g_id, "data", H5P_DEFAULT);
     if (ds_id <= 0) {
         ERROR_JUMP(-1, done, "Unable to open 'data' dataset");
@@ -403,9 +404,8 @@ int get_nxs_dataset_dims(struct ds_desc_t* desc) {
     }
 
     desc->data_width = (int)width;
-    DEBUGF("nxs_dataset_dims: dims [%llu %llu %llu], width %d\n",
-           (unsigned long long)desc->dims[0], (unsigned long long)desc->dims[1],
-           (unsigned long long)desc->dims[2], desc->data_width);
+    DEBUGF("nxs_dataset_dims: dims [%llu %llu %llu], width %d\n", (unsigned long long)desc->dims[0],
+           (unsigned long long)desc->dims[1], (unsigned long long)desc->dims[2], desc->data_width);
 
 close_space:
     H5Sclose(s_id);
@@ -763,8 +763,7 @@ int get_dectris_eiger_pixel_info(const struct ds_desc_t* desc, double* x_size, d
     return 0;
 }
 
-int get_pixel_mask_impl(const struct ds_desc_t* desc, hid_t g_id, const char* path,
-                        int* buffer) {
+int get_pixel_mask_impl(const struct ds_desc_t* desc, hid_t g_id, const char* path, int* buffer) {
     int retval = 0;
     size_t expected_rows = (size_t)desc->dims[1];
     size_t expected_cols = (size_t)desc->dims[2];
@@ -790,8 +789,8 @@ int get_pixel_mask_impl(const struct ds_desc_t* desc, hid_t g_id, const char* pa
         ERROR_JUMP(-1, close_space, "Error getting pixel_mask dimensions");
     }
     DEBUGF("pixel_mask: rank %d dims [%llu %llu %llu], expected [%zu %zu]\n", rank,
-           (unsigned long long)dims[0], (unsigned long long)dims[1],
-           (unsigned long long)dims[2], expected_rows, expected_cols);
+           (unsigned long long)dims[0], (unsigned long long)dims[1], (unsigned long long)dims[2],
+           expected_rows, expected_cols);
 
     /* Prepare selections */
     hsize_t start_d[3] = {0, 0, 0};
@@ -924,11 +923,11 @@ herr_t det_visit_callback(hid_t root_id, const char* name, const H5O_info_t* inf
                     if (strcmp("NXdata", nxclass) == 0) {
                         found_via_nxclass = 1;
                         /* Logic for prioritizing /entry/data or groups with data_000001 */
-        char full_path[MAX_PATH_LEN] = {0};
-        ssize_t len = H5Iget_name(g_id, full_path, sizeof(full_path));
-        DEBUGF("visit: NXdata at %s\n", full_path);
-        int is_entry_data =
-            (len >= 0 && strncmp(full_path, "/entry/data", 11) == 0);
+                        char full_path[MAX_PATH_LEN] = {0};
+                        ssize_t len = H5Iget_name(g_id, full_path, sizeof(full_path));
+                        DEBUGF("visit: NXdata at %s\n", full_path);
+                        int is_entry_data =
+                            (len >= 0 && strncmp(full_path, "/entry/data", 11) == 0);
                         int has_data = (H5Lexists(g_id, "data", H5P_DEFAULT) > 0) ||
                                        (H5Lexists(g_id, "data_000001", H5P_DEFAULT) > 0);
 
@@ -1022,6 +1021,7 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
     void (*free_func)(struct ds_desc_t*) = NULL;
     struct ds_desc_t* output = NULL;
 
+    /* Build the appropriate descriptor (Eiger VDS/direct, or standard NXS). */
     /* Use NXdetector for pixel properties */
     g_id = visit_result->nxdetector;
 
@@ -1240,6 +1240,7 @@ int get_detector_info(const hid_t fid, struct ds_desc_t** desc) {
     int retval = 0;
     struct det_visit_objects_t objects = {0};
 
+    /* Discover detector/data groups and build a descriptor for the dataset. */
     if (H5Ovisit(fid, H5_INDEX_NAME, H5_ITER_INC, &det_visit_callback, &objects) < 0) {
         clear_det_visit_objects(&objects);
         ERROR_JUMP(-1, done, "Error during H5Ovisit callback");
@@ -1254,8 +1255,7 @@ int get_detector_info(const hid_t fid, struct ds_desc_t** desc) {
         if (objects.nxdetector > 0)
             get_object_path(objects.nxdetector, nxdet_path, sizeof(nxdet_path));
         fprintf(stderr, "[DURIN] detector_info: NXdata=%s NXdetector=%s\n",
-                nxdata_path[0] ? nxdata_path : "(none)",
-                nxdet_path[0] ? nxdet_path : "(none)");
+                nxdata_path[0] ? nxdata_path : "(none)", nxdet_path[0] ? nxdet_path : "(none)");
     }
 
     if ((retval = create_dataset_descriptor(desc, &objects)) < 0) {

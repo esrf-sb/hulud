@@ -13,11 +13,7 @@
 #include "file.h"
 #include "filters.h"
 
-/* ----------------------------------------------------------------------------
- * NEW: Parallel Index Builder
- * This iterates over the HDF5 structure ONCE at startup to get all offsets.
- * ----------------------------------------------------------------------------
- */
+/* Build the fast index of raw chunk offsets for every mapped frame. */
 int build_parallel_index(struct opt_eiger_ds_desc_t* opt) {
     int retval = 0;
     int total_frames = opt->base.base.dims[0];
@@ -89,11 +85,7 @@ fail:
     return retval;
 }
 
-/* ----------------------------------------------------------------------------
- * NEW: Parallel Reader
- * Uses pread() and local buffers. No HDF5 calls. Thread-safe.
- * ----------------------------------------------------------------------------
- */
+/* Thread-safe reader that bypasses HDF5 and uses pread() with the fast index. */
 int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf) {
     const struct opt_eiger_ds_desc_t* opt = (const void*)d;
 
@@ -135,10 +127,7 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
     return retval;
 }
 
-/* ----------------------------------------------------------------------------
- * EXISTING: Sequential / Fallback Reader
- * ----------------------------------------------------------------------------
- */
+/* Fallback HDF5-based reader, used when the fast path is not available. */
 int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
     const struct opt_eiger_ds_desc_t* opt = (const void*)d;
 

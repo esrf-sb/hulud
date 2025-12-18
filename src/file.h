@@ -17,15 +17,12 @@
 #define MAX_MSG_LEN 512
 #endif
 
-/* Forward declarations */
 struct ds_desc_t;
 struct eiger_ds_desc_t;
 struct opt_eiger_ds_desc_t;
 
-/* Debug flag set by plugin_open (DURIN_DEBUG env var) */
 extern int durin_debug_enabled;
 
-/* --- NEW: Parallel Index Struct --- */
 /* Stores pre-calculated file location for a single frame to allow lock-free reading */
 struct ParallelFrameIndex {
     int fd;                  /* OS File Descriptor */
@@ -35,7 +32,6 @@ struct ParallelFrameIndex {
     int has_bs_filter;       /* Whether this chunk needs bitshuffle-lz4 decompression */
 };
 
-/* Frame map entry to support VDS bypass */
 struct FrameMapEntry {
     hsize_t vds_start;
     hsize_t vds_end;
@@ -60,7 +56,6 @@ struct FrameMapEntry {
 struct det_visit_objects_t;  // Needed by file.c
 struct nxs_ds_desc_t;        // Used but not declared globally
 
-/* Objects found during object traversal */
 struct det_visit_objects_t {
     hid_t nxdata;
     hid_t nxdetector;
@@ -99,16 +94,17 @@ struct opt_eiger_ds_desc_t {
     int n_map_entries;
     struct FrameMapEntry* frame_map_entries;
 
-    /* --- NEW: Pointer to the fast parallel index array --- */
     struct ParallelFrameIndex* fast_index;
 };
 
-/* Function Prototypes */
+/** HDF5-based fallback reader for a mapped frame. */
 int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf);
-/* --- NEW: Prototypes for parallel functions --- */
+/** Build fast chunk index for parallel raw access. */
 int build_parallel_index(struct opt_eiger_ds_desc_t* opt);
+/** Thread-safe raw reader that uses the fast index. */
 int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf);
 
+/** Walk the file and construct an appropriate detector/data descriptor. */
 int get_detector_info(hid_t file_id, struct ds_desc_t** desc);
 void clear_det_visit_objects(struct det_visit_objects_t* objects);
 int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_t* visit_result);

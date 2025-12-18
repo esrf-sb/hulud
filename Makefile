@@ -12,16 +12,13 @@ CC=h5cc
 CFLAGS=-DH5_USE_110_API -Wall -g -O2 -fpic -I$(INC_DIR) -I$(BSLZ4_INC_DIR) -std=c99 -shlib
 
 .PHONY: all
-all: plugin benchmark benchmark_loader example test_plugin
+all: plugin  benchmark example test_plugin
 
 .PHONY: plugin
 plugin: $(BUILD_DIR)/durin-plugin.so
 
 .PHONY: benchmark
 benchmark: $(BUILD_DIR)/benchmark
-
-.PHONY: benchmark_loader
-benchmark_loader: $(BUILD_DIR)/benchmark_loader
 
 .PHONY: example
 example: $(BUILD_DIR)/example
@@ -51,15 +48,11 @@ $(BUILD_DIR)/bslz4.a
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -shared $^ -o $(BUILD_DIR)/durin-plugin.so
 
-# --- STATIC/LINKED BENCHMARK (Uses internal headers) ---
-$(BUILD_DIR)/benchmark: $(SRC_DIR)/benchmark.c $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a
-	mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) $< $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a -o $@
 
 # --- DYNAMIC/LOADER BENCHMARK (Uses dlopen) ---
 # This rule does NOT link against plugin.o/bslz4.a. 
 # It relies on dlopen() finding the .so at runtime.
-$(BUILD_DIR)/benchmark_loader: $(SRC_DIR)/benchmark_loader.c
+$(BUILD_DIR)/benchmark: $(SRC_DIR)/benchmark.c
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $< -o $@ -ldl -lpthread
 
