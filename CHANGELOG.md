@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to the Durin VDS project will be documented in this file.
+## [1.4.1] -  2025-12-16
+### Known Issues
+- **Bug:** - External Links solver not using optmize reader
+- **Reformating Code:** - Better comments. Removing benchmark replace with benchmark_plugin
 
 ## [1.4.0] -  2025-12-16
 ### Known Issues
