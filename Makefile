@@ -8,11 +8,11 @@ BSLZ4_BUILD_DIR = ./bslz4/build
 BSLZ4_INC_DIR = $(BSLZ4_SRC_DIR)
 
 CC=h5cc
-# -shlib tells h5cc to link against shared HDF5 libs, which is what we want for both plugin and exe
+# -shlib tells h5cc to link against shared HDF5 libs
 CFLAGS=-DH5_USE_110_API -Wall -g -O2 -fpic -I$(INC_DIR) -I$(BSLZ4_INC_DIR) -std=c99 -shlib
 
 .PHONY: all
-all: plugin benchmark example test_plugin
+all: plugin  benchmark example test_plugin
 
 .PHONY: plugin
 plugin: $(BUILD_DIR)/durin-plugin.so
@@ -48,10 +48,13 @@ $(BUILD_DIR)/bslz4.a
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -shared $^ -o $(BUILD_DIR)/durin-plugin.so
 
-# --- NEW BENCHMARK TARGET ---
-$(BUILD_DIR)/benchmark: $(SRC_DIR)/benchmark.c $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a
+
+# --- DYNAMIC/LOADER BENCHMARK (Uses dlopen) ---
+# This rule does NOT link against plugin.o/bslz4.a. 
+# It relies on dlopen() finding the .so at runtime.
+$(BUILD_DIR)/benchmark: $(SRC_DIR)/benchmark.c
 	mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) $< $(BUILD_DIR)/plugin.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o $(BUILD_DIR)/bslz4.a -o $@
+	$(CC) $(CFLAGS) $< -o $@ -ldl -lpthread
 
 $(BUILD_DIR)/example: $(BUILD_DIR)/test.o $(BUILD_DIR)/file.o $(BUILD_DIR)/readers.o $(BUILD_DIR)/vds_map.o $(BUILD_DIR)/err.o $(BUILD_DIR)/filters.o \
 $(BUILD_DIR)/bslz4.a

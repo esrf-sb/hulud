@@ -1,6 +1,12 @@
+/*
+ * Corrected vds_map.c
+ * Fix: Replaced implicit 'strdup' with internal 'dupstr' helper.
+ */
 #include "vds_map.h"
 
 #include <hdf5.h>
+#include <libgen.h> /* Required for dirname */
+#include <limits.h> /* Required for PATH_MAX */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +20,7 @@ struct MapBuilder {
     size_t cap;
 };
 
+/* Internal helper to duplicate string (avoids POSIX dependency issues with strdup) */
 static char* dupstr(const char* s) {
     size_t len = strlen(s) + 1;
     char* out = malloc(len);
@@ -32,15 +39,25 @@ static int ensure_capacity(struct MapBuilder* b, size_t extra) {
     return 0;
 }
 
-static char* resolve_path(const char* base_dir, const char* master_dir, const char* rel) {
-    const char* base = NULL;
-    if (rel[0] == '/') return dupstr(rel);
-    base = (base_dir && base_dir[0]) ? base_dir : master_dir;
-    if (!base || !base[0]) return dupstr(rel);
-    size_t len = strlen(base) + 1 + strlen(rel) + 1;
+/* * FIX: Robust path resolution.
+ * If 'rel' is absolute, use it.
+ * If 'rel' is relative, prepend 'base_dir'.
+ */
+static char* resolve_path(const char* base_dir, const char* rel) {
+    if (rel[0] == '/') return dupstr(rel);  // Already absolute
+
+    if (!base_dir || !base_dir[0]) return dupstr(rel);  // No base, return relative
+
+    size_t len = strlen(base_dir) + 1 + strlen(rel) + 1;
     char* full = malloc(len);
     if (!full) return NULL;
-    snprintf(full, len, "%s/%s", base, rel);
+
+    // Check if base_dir already ends with /
+    if (base_dir[strlen(base_dir) - 1] == '/') {
+        snprintf(full, len, "%s%s", base_dir, rel);
+    } else {
+        snprintf(full, len, "%s/%s", base_dir, rel);
+    }
     return full;
 }
 
@@ -114,9 +131,9 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
 }
 
 /* Recursive flatten of a mapping entry */
-static int flatten_mapping(struct MapBuilder* b, const char* master_dir, const char* base_dir,
-                           hid_t plist, size_t map_idx, hsize_t outer_v_offset,
-                           struct opt_eiger_ds_desc_t* opt, int* data_width_set) {
+static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, hid_t plist,
+                           size_t map_idx, hsize_t outer_v_offset, struct opt_eiger_ds_desc_t* opt,
+                           int* data_width_set) {
     ssize_t fl = H5Pget_virtual_filename(plist, map_idx, NULL, 0);
     char* src_file_rel = calloc(fl + 1, 1);
     H5Pget_virtual_filename(plist, map_idx, src_file_rel, fl + 1);
@@ -133,14 +150,18 @@ static int flatten_mapping(struct MapBuilder* b, const char* master_dir, const c
     H5Sclose(vsp);
     H5Sclose(ssp);
 
-    char* src_full = resolve_path(base_dir, master_dir, src_file_rel);
+    /* FIX: Resolve path relative to current_base_dir */
+    char* src_full = resolve_path(current_base_dir, src_file_rel);
+
     if (!src_full) {
         free(src_file_rel);
         free(src_dset_name);
         return -1;
     }
+
     hid_t src_f = H5Fopen(src_full, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (src_f < 0) {
+        fprintf(stderr, "[DURIN] Error: Could not open source file: %s\n", src_full);
         free(src_full);
         free(src_file_rel);
         free(src_dset_name);
@@ -162,23 +183,22 @@ static int flatten_mapping(struct MapBuilder* b, const char* master_dir, const c
     if (lay == H5D_VIRTUAL) {
         size_t inner = 0;
         H5Pget_virtual_count(sp, &inner);
-        /* directory of current source */
-        char base_dir_buf[4096] = {0};
-        strncpy(base_dir_buf, src_full, sizeof(base_dir_buf) - 1);
-        char* slash = strrchr(base_dir_buf, '/');
-        if (slash)
-            *slash = '\0';
-        else
-            base_dir_buf[0] = '\0';
+
+        /* * FIX: Update base directory for nested VDS.
+         * Using internal dupstr instead of strdup.
+         */
+        char* new_base_dir = dupstr(src_full);
+        char* dname = dirname(new_base_dir);  // Modifies new_base_dir in place
 
         for (size_t j = 0; j < inner; ++j) {
             hsize_t inner_offset = outer_v_offset + v0[0];
-            if (flatten_mapping(b, master_dir, base_dir_buf, sp, j, inner_offset, opt,
-                                data_width_set) < 0) {
+            /* Pass the new directory as the base for the inner mapping */
+            if (flatten_mapping(b, dname, sp, j, inner_offset, opt, data_width_set) < 0) {
                 retval = -1;
                 break;
             }
         }
+        free(new_base_dir);
         H5Pclose(sp);
         H5Dclose(src_d);
         H5Fclose(src_f);
@@ -289,7 +309,8 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_d
         size_t maps = blocks[b].map_count;
         for (size_t i = 0; i < maps; ++i) {
             hsize_t outer_offset = blocks[b].frame_offset;
-            if (flatten_mapping(&builder, master_dir, master_dir, plist, i, outer_offset, opt,
+            /* FIX: Pass master_dir as the initial base directory */
+            if (flatten_mapping(&builder, master_dir, plist, i, outer_offset, opt,
                                 &data_width_set) < 0) {
                 retval = -1;
                 break;

@@ -6,18 +6,18 @@
 #include "plugin.h"
 
 #include <hdf5.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "file.h"
 #include "filters.h"
 
-/* XDS does not provide an error callback facility, so just write to stderr
-   for now - generally regarded as poor practice */
 #define ERROR_OUTPUT stderr
 
-/* mask bits loosely based on what Neggia does and what NeXus says should be
-   done basically - anything in the low byte (& 0xFF) means "ignore this"
-   Neggia uses the value -2 if bit 1, 2 or 3 are set */
+/* mask bits loosely based on what Neggia does */
 #define COPY_AND_MASK(in, out, size, mask)       \
     {                                            \
         int i;                                   \
@@ -48,9 +48,49 @@
 static hid_t file_id = 0;
 static struct ds_desc_t* data_desc = NULL;
 static int* mask_buffer = NULL;
-static void* tmp_buffer = NULL;
-static size_t tmp_buffer_size = 0;
-static int fast_path = 0; /* optional env flag to skip conversion/mask when safe */
+static int fast_path = 0;
+static pthread_mutex_t plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int h5_atexit_configured = 0;
+static int apply_mask_and_cast = 1;
+extern int durin_debug_enabled;
+/* True only when the selected reader does not touch the HDF5 API (parallel fast-path) */
+static int data_reader_thread_safe = 0;
+
+struct thread_tmp_buffer {
+    void* buffer;
+    size_t size;
+};
+static pthread_once_t tmp_buffer_key_once = PTHREAD_ONCE_INIT;
+static pthread_key_t tmp_buffer_key;
+
+static void destroy_thread_tmp(void* ptr) {
+    struct thread_tmp_buffer* state = ptr;
+    if (state) {
+        free(state->buffer);
+        free(state);
+    }
+}
+
+static void init_tmp_buffer_key(void) { pthread_key_create(&tmp_buffer_key, destroy_thread_tmp); }
+
+static void* get_thread_tmp_buffer(size_t needed) {
+    pthread_once(&tmp_buffer_key_once, init_tmp_buffer_key);
+    struct thread_tmp_buffer* state = pthread_getspecific(tmp_buffer_key);
+    if (!state) {
+        state = calloc(1, sizeof(*state));
+        if (!state) return NULL;
+        pthread_setspecific(tmp_buffer_key, state);
+    }
+    if (state->size < needed) {
+        void* nb = realloc(state->buffer, needed);
+        if (!nb) return NULL;
+        state->buffer = nb;
+        state->size = needed;
+    }
+    return state->buffer;
+}
+
+static int env_truthy(const char* v) { return v && v[0] != '0' && v[0] != '\0'; }
 
 void fill_info_array(int info[1024]) {
     info[0] = DLS_CUSTOMER_ID;
@@ -61,11 +101,7 @@ void fill_info_array(int info[1024]) {
 }
 
 int convert_to_int_and_mask(void* in_buffer, int d_width, int* out_buffer, int length, int* mask) {
-    /* transfer data to output buffer, performing data conversion as required */
     int retval = 0;
-    /* TODO: decide how conversion of data should work */
-    /* Should we sign extend? Neggia doesn't (casts from uint*), but may be more
-     * intuitive */
     if (d_width == sizeof(signed char)) {
         signed char* in = in_buffer;
         COPY_AND_MASK(in, out_buffer, length, mask);
@@ -95,16 +131,25 @@ done:
 extern "C" {
 #endif
 
+/**
+ * Open an HDF5 master file and prepare the plugin state.
+ * Fills version info, configures HDF5 error handling, and builds the detector
+ * descriptor (including optional pixel mask).
+ */
 void plugin_open(const char* filename, int info[1024], int* error_flag) {
     int retval = 0;
     *error_flag = 0;
 
+    /* Open is still serialized */
+    pthread_mutex_lock(&plugin_mutex);
+
     init_error_handling();
 
-    /* Best effort: avoid atexit cleanup; ignore failure on some HDF5 builds */
-    if (H5dont_atexit() < 0) {
-        fprintf(ERROR_OUTPUT, "[DURIN] WARNING: H5dont_atexit failed, continuing\n");
-        reset_error_stack();
+    if (!h5_atexit_configured) {
+        h5_atexit_configured = 1;
+        if (H5dont_atexit() < 0) {
+            reset_error_stack();
+        }
     }
 
     if (init_h5_error_handling() < 0) {
@@ -113,7 +158,17 @@ void plugin_open(const char* filename, int info[1024], int* error_flag) {
 
     fill_info_array(info);
     const char* fp = getenv("DURIN_PLUGIN_FASTPATH");
-    fast_path = (fp && fp[0] != '0' && fp[0] != '\0');
+    fast_path = env_truthy(fp);
+
+    /* Enable verbose debug logging if requested */
+    durin_debug_enabled = env_truthy(getenv("DURIN_DEBUG"));
+    if (durin_debug_enabled) {
+        fprintf(stderr, "[DURIN] Debug logging enabled\n");
+    }
+
+    const char* disable_mask_env = getenv("DURIN_DISABLE_MASKING");
+    apply_mask_and_cast = !env_truthy(disable_mask_env);
+
     file_id = H5Fopen(filename, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (file_id < 0) {
         char message[128] = {0};
@@ -127,21 +182,28 @@ void plugin_open(const char* filename, int info[1024], int* error_flag) {
         ERROR_JUMP(-4, done, "");
     }
 
-    mask_buffer = malloc(data_desc->dims[1] * data_desc->dims[2] * sizeof(int));
-    if (mask_buffer) {
-        retval = data_desc->get_pixel_mask(data_desc, mask_buffer);
-        if (retval < 0) {
-            fprintf(ERROR_OUTPUT,
-                    "WARNING: Could not read pixel mask - no masking will be applied\n");
-            dump_error_stack(ERROR_OUTPUT);
-            free(mask_buffer);
-            mask_buffer = NULL;
+    /* Only the fast parallel reader avoids HDF5 calls and is thread-safe */
+    data_reader_thread_safe =
+        (data_desc && data_desc->get_data_frame == get_virtual_frame_parallel);
+
+    if (apply_mask_and_cast) {
+        mask_buffer = malloc(data_desc->dims[1] * data_desc->dims[2] * sizeof(int));
+        if (mask_buffer) {
+            retval = data_desc->get_pixel_mask(data_desc, mask_buffer);
+            if (retval < 0) {
+                fprintf(ERROR_OUTPUT,
+                        "WARNING: Could not read pixel mask - no masking will be applied\n");
+                dump_error_stack(ERROR_OUTPUT);
+                free(mask_buffer);
+                mask_buffer = NULL;
+            }
         }
+        retval = 0;
     }
-    retval = 0;
 
 done:
     *error_flag = retval;
+    pthread_mutex_unlock(&plugin_mutex);
     if (retval < 0) {
         if ((data_desc) && (data_desc->free_desc)) {
             data_desc->free_desc(data_desc);
@@ -151,12 +213,16 @@ done:
     }
 }
 
-void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy, int* number_of_frames,
-                       int info[1024], int* error_flag) {
+/**
+ * Retrieve detector geometry and frame count from the open descriptor.
+ */
+void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
+                       int* number_of_frames, int info[1024], int* error_flag) {
     int err = 0;
     int retval = 0;
     double x_pixel_size, y_pixel_size;
-    /* avoid per-call overhead; info filled once in plugin_open */
+
+    pthread_mutex_lock(&plugin_mutex);
 
     err = data_desc->get_pixel_properties(data_desc, &x_pixel_size, &y_pixel_size);
     if (err < 0) {
@@ -172,39 +238,62 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy, int*
 
 done:
     *error_flag = retval;
+    pthread_mutex_unlock(&plugin_mutex);
     if (retval < 0) {
         dump_error_stack(ERROR_OUTPUT);
     }
 }
 
+/**
+ * Read a frame (1-based index) into the caller-provided buffer.
+ * Uses the fast path when possible; otherwise protects HDF5 calls with a mutex.
+ */
 void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int info[1024],
                      int* error_flag) {
     int retval = 0;
     int frame_size_px = data_desc->dims[1] * data_desc->dims[2];
-    /* These are fixed after open; skip repeated info filling/reset to reduce overhead */
+    int need_lock = !data_reader_thread_safe;
+
+    /* * --- MULTI-THREADING CHANGE ---
+     * Locks DISABLED to allow parallel execution.
+     */
+    if (need_lock) pthread_mutex_lock(&plugin_mutex);
 
     void* buffer = NULL;
     if ((int)sizeof(*data_array) == data_desc->data_width) {
         buffer = data_array;
     } else {
         size_t needed = (size_t)data_desc->data_width * frame_size_px;
-        if (!tmp_buffer || tmp_buffer_size < needed) {
-            void* nb = realloc(tmp_buffer, needed);
-            if (!nb) {
-                ERROR_JUMP(-1, done, "Unable to allocate data buffer");
-            }
-            tmp_buffer = nb;
-            tmp_buffer_size = needed;
+        buffer = get_thread_tmp_buffer(needed);
+        if (!buffer) {
+            ERROR_JUMP(-1, done, "Unable to allocate data buffer");
         }
-        buffer = tmp_buffer;
     }
 
+    /* 1-based index from XDS converted to 0-based */
     if (data_desc->get_data_frame(data_desc, (*frame_number) - 1, buffer) < 0) {
         char message[64] = {0};
         sprintf(message, "Failed to retrieve data for frame %d", *frame_number);
         ERROR_JUMP(-2, done, message);
     }
 
+    if (!apply_mask_and_cast) {
+        if (buffer != data_array) {
+            size_t pixel_bytes = (size_t)data_desc->data_width;
+            size_t copy_bytes =
+                (pixel_bytes < sizeof(*data_array)) ? pixel_bytes : sizeof(*data_array);
+            memset(data_array, 0, (size_t)frame_size_px * sizeof(*data_array));
+            char* dst = (char*)data_array;
+            char* src = (char*)buffer;
+            size_t dst_stride = sizeof(*data_array);
+            for (int i = 0; i < frame_size_px; ++i) {
+                memcpy(dst + ((size_t)i * dst_stride), src + ((size_t)i * pixel_bytes), copy_bytes);
+            }
+        }
+        goto done;
+    }
+
+    /* Masking/Conversion Logic */
     if (fast_path && buffer == data_array && mask_buffer == NULL) {
         /* nothing further to do */
     } else if (buffer != data_array) {
@@ -223,12 +312,17 @@ done:
     if (retval < 0) {
         dump_error_stack(ERROR_OUTPUT);
     }
+    if (need_lock) pthread_mutex_unlock(&plugin_mutex);
 }
 
+/**
+ * Close all plugin resources and release HDF5 handles.
+ */
 void plugin_close(int* error_flag) {
+    pthread_mutex_lock(&plugin_mutex);
+    data_reader_thread_safe = 0;
     if (file_id) {
         if (H5Fclose(file_id) < 0) {
-            /* TODO: backtrace */
             *error_flag = -1;
         }
     }
@@ -238,20 +332,16 @@ void plugin_close(int* error_flag) {
         free(mask_buffer);
         mask_buffer = NULL;
     }
-    if (tmp_buffer) {
-        free(tmp_buffer);
-        tmp_buffer = NULL;
-        tmp_buffer_size = 0;
-    }
-    if (data_desc->free_desc) {
+    if (data_desc && data_desc->free_desc) {
         data_desc->free_desc(data_desc);
         data_desc = NULL;
     }
+    pthread_mutex_unlock(&plugin_mutex);
     if (H5close() < 0) {
         *error_flag = -1;
     }
 }
 
 #ifdef __cplusplus
-} /* extern "C" */
+}
 #endif

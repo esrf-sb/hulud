@@ -203,7 +203,7 @@ int main() {
     }
 
     // Example: use the mapping to find a specific frame's source
-    hsize_t query_frame = 150;  // example global frame index
+    hsize_t query_frame = 10;  // example global frame index
     FrameMapEntry* found = NULL;
     for (size_t j = 0; j < map_count; ++j) {
         if (query_frame >= map_entries[j].v_start && query_frame <= map_entries[j].v_end) {
