@@ -85,7 +85,7 @@ static void set_direct_flags(struct FrameMapEntry* E, hid_t sp) {
 
 static int append_leaf(struct MapBuilder* b, const char* src_full, const char* src_dset_name,
                        hid_t src_f, hid_t src_d, hsize_t v_start, hsize_t v_end, hsize_t s_start,
-                       hsize_t s_end, struct opt_eiger_ds_desc_t* opt, int* data_width_set) {
+                       hsize_t s_end, struct opt_pilatus_ds_desc_t* opt, int* data_width_set) {
     if (v_start >= opt->base.base.dims[0]) return 0;
     hsize_t src_dims[3] = {0};
     hid_t spc = H5Dget_space(src_d);
@@ -132,7 +132,7 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
 
 /* Recursive flatten of a mapping entry */
 static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, hid_t plist,
-                           size_t map_idx, hsize_t outer_v_offset, struct opt_eiger_ds_desc_t* opt,
+                           size_t map_idx, hsize_t outer_v_offset, struct opt_pilatus_ds_desc_t* opt,
                            int* data_width_set) {
     ssize_t fl = H5Pget_virtual_filename(plist, map_idx, NULL, 0);
     char* src_file_rel = calloc(fl + 1, 1);
@@ -226,8 +226,8 @@ static int compare_frame_map_local(const void* a, const void* b) {
     return (A->vds_start > B->vds_start) - (A->vds_start < B->vds_start);
 }
 
-int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_desc_t* opt,
-                      struct eiger_ds_desc_t* eiger_desc_to_free) {
+int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_pilatus_ds_desc_t* opt,
+                      struct pilatus_ds_desc_t* pilatus_desc_to_free) {
     int retval = 0;
     struct MapBuilder builder = {0};
     struct VdsBlockInfo {
@@ -240,11 +240,19 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_d
     hsize_t total_frames = 0;
     hsize_t dims1 = 0, dims2 = 0;
     char ds_name[MAX_NAME_LEN] = {0};
+    int use_named_blocks =
+        opt && opt->base.block_names && opt->base.block_starts && opt->base.n_data_blocks > 0;
+    int named_count = use_named_blocks ? opt->base.n_data_blocks : 0;
 
     /* Discover blocks */
     for (int idx = 0;; idx++) {
-        snprintf(ds_name, sizeof(ds_name), "data_%06d", idx + 1);
-        if (H5Lexists(ds_id, ds_name, H5P_DEFAULT) <= 0) break;
+        if (use_named_blocks) {
+            if (idx >= named_count) break;
+            snprintf(ds_name, sizeof(ds_name), "%s", opt->base.block_names[idx]);
+        } else {
+            snprintf(ds_name, sizeof(ds_name), "data_%06d", idx + 1);
+            if (H5Lexists(ds_id, ds_name, H5P_DEFAULT) <= 0) break;
+        }
         hid_t dset = H5Dopen2(ds_id, ds_name, H5P_DEFAULT);
         if (dset < 0) {
             retval = -1;
@@ -268,7 +276,10 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_d
             dims1 = block_dims[1];
             dims2 = block_dims[2];
         }
-        total_frames += block_dims[0];
+        hsize_t block_offset =
+            (use_named_blocks && idx < opt->base.n_data_blocks) ? opt->base.block_starts[idx]
+                                                                : total_frames;
+        if (block_offset + block_dims[0] > total_frames) total_frames = block_offset + block_dims[0];
         struct VdsBlockInfo* tmp = realloc(blocks, (n_blocks + 1) * sizeof(*tmp));
         if (!tmp) {
             H5Pclose(plist);
@@ -277,7 +288,7 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_d
             goto done;
         }
         blocks = tmp;
-        blocks[n_blocks].frame_offset = total_frames - block_dims[0];
+        blocks[n_blocks].frame_offset = block_offset;
         blocks[n_blocks].block_frames = block_dims[0];
         blocks[n_blocks].map_count = maps;
         n_blocks++;
@@ -303,7 +314,11 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_d
     int data_width_set = 0;
 
     for (int b = 0; b < n_blocks; ++b) {
-        snprintf(ds_name, sizeof(ds_name), "data_%06d", b + 1);
+        if (use_named_blocks) {
+            snprintf(ds_name, sizeof(ds_name), "%s", opt->base.block_names[b]);
+        } else {
+            snprintf(ds_name, sizeof(ds_name), "data_%06d", b + 1);
+        }
         hid_t dset = H5Dopen2(ds_id, ds_name, H5P_DEFAULT);
         hid_t plist = H5Dget_create_plist(dset);
         size_t maps = blocks[b].map_count;
@@ -342,7 +357,7 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_eiger_ds_d
         builder.used = keep;
         opt->frame_map_entries = builder.entries;
         opt->n_map_entries = (int)builder.used;
-        if (eiger_desc_to_free) free(eiger_desc_to_free);
+        if (pilatus_desc_to_free) free(pilatus_desc_to_free);
     } else {
         free(builder.entries);
     }
