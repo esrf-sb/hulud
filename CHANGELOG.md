@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to the Durin VDS project will be documented in this file.
+## [1.4.1] -  2026-01-19
+### Known Issues
+- **Bug:** - Enhance Pilatus dataset handling for non-contiguous frames
+- **API** - Added to the benchmark a debug mode to follow the reading logic
+
+
 ## [1.4.1] -  2025-12-16
 ### Known Issues
 - **Bug:** - External Links solver not using optmize reader
@@ -13,7 +19,7 @@ All notable changes to the Durin VDS project will be documented in this file.
 ## [1.3.1] -  2025-12-11
 ### Known Issues
  - **Relative Absolute Path** - Resolved Issue with relative path and symbolic links resolution
-  - **Race competition** - Segmentation fault. Race competition on the scratch 
+ - **Race competition** - Segmentation fault. Race competition on the scratch 
 
 ## [1.3.0] - 2025-12-02
 ### Added
