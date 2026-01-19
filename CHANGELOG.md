@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to the Durin VDS project will be documented in this file.
-## [1.4.1] -  2026-01-19
+## [1.4.2] -  2026-01-19
 ### Known Issues
 - **Bug:** - Enhance Pilatus dataset handling for non-contiguous frames
 - **API** - Added to the benchmark a debug mode to follow the reading logic
