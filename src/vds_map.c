@@ -130,10 +130,44 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
     return 0;
 }
 
+/* Clip a 1D VDS mapping (v0..v1 -> s0..s1) to a vspace range.
+ * Assumes a contiguous 1:1 mapping along the first dimension (typical for Lima2 VDS slices).
+ * Returns 0 if no overlap, 1 if clipped/kept.
+ */
+static int clip_mapping_1d(hsize_t v0, hsize_t v1, hsize_t s0, hsize_t s1, int has_clip,
+                           hsize_t clip_start, hsize_t clip_end, hsize_t* out_v0,
+                           hsize_t* out_v1, hsize_t* out_s0, hsize_t* out_s1) {
+    if (!has_clip) {
+        *out_v0 = v0;
+        *out_v1 = v1;
+        *out_s0 = s0;
+        *out_s1 = s1;
+        return 1;
+    }
+
+    if (clip_end < v0 || clip_start > v1) return 0;
+
+    hsize_t nv0 = (clip_start > v0) ? clip_start : v0;
+    hsize_t nv1 = (clip_end < v1) ? clip_end : v1;
+    if (nv0 > nv1) return 0;
+
+    hsize_t shift = nv0 - v0;
+    hsize_t span = nv1 - nv0;
+    hsize_t ns0 = s0 + shift;
+    hsize_t ns1 = ns0 + span;
+
+    *out_v0 = nv0;
+    *out_v1 = nv1;
+    *out_s0 = ns0;
+    *out_s1 = ns1;
+    return 1;
+}
+
 /* Recursive flatten of a mapping entry */
 static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, hid_t plist,
-                           size_t map_idx, hsize_t outer_v_offset, struct opt_pilatus_ds_desc_t* opt,
-                           int* data_width_set) {
+                           size_t map_idx, hssize_t outer_v_offset,
+                           struct opt_pilatus_ds_desc_t* opt, int* data_width_set, int has_clip,
+                           hsize_t clip_start, hsize_t clip_end) {
     ssize_t fl = H5Pget_virtual_filename(plist, map_idx, NULL, 0);
     char* src_file_rel = calloc(fl + 1, 1);
     H5Pget_virtual_filename(plist, map_idx, src_file_rel, fl + 1);
@@ -149,6 +183,15 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
     H5Sget_select_bounds(ssp, s0, s1);
     H5Sclose(vsp);
     H5Sclose(ssp);
+
+    /* Clip to a subset of the current vspace if requested */
+    hsize_t cv0 = v0[0], cv1 = v1[0], cs0 = s0[0], cs1 = s1[0];
+    if (!clip_mapping_1d(v0[0], v1[0], s0[0], s1[0], has_clip, clip_start, clip_end, &cv0,
+                         &cv1, &cs0, &cs1)) {
+        free(src_file_rel);
+        free(src_dset_name);
+        return 0; /* No overlap with clip range */
+    }
 
     /* FIX: Resolve path relative to current_base_dir */
     char* src_full = resolve_path(current_base_dir, src_file_rel);
@@ -191,9 +234,16 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
         char* dname = dirname(new_base_dir);  // Modifies new_base_dir in place
 
         for (size_t j = 0; j < inner; ++j) {
-            hsize_t inner_offset = outer_v_offset + v0[0];
-            /* Pass the new directory as the base for the inner mapping */
-            if (flatten_mapping(b, dname, sp, j, inner_offset, opt, data_width_set) < 0) {
+            /* Map inner VDS indices [cs0..cs1] into outer VDS indices.
+             * outer_index = outer_v_offset + cv0 + (inner_index - cs0)
+             * => inner offset for recursion is (outer_v_offset + cv0 - cs0)
+             */
+            hssize_t inner_offset = outer_v_offset + (hssize_t)cv0 - (hssize_t)cs0;
+            /* Pass the new directory as the base for the inner mapping.
+             * Clip inner mappings to [cs0..cs1] (source selection from outer mapping).
+             */
+            if (flatten_mapping(b, dname, sp, j, inner_offset, opt, data_width_set, 1, cs0,
+                                cs1) < 0) {
                 retval = -1;
                 break;
             }
@@ -203,9 +253,23 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
         H5Dclose(src_d);
         H5Fclose(src_f);
     } else {
-        hsize_t v_start = outer_v_offset + v0[0];
-        hsize_t v_end = outer_v_offset + v1[0];
-        retval = append_leaf(b, src_full, src_dset_name, src_f, src_d, v_start, v_end, s0[0], s1[0],
+        hssize_t v_start_s = outer_v_offset + (hssize_t)cv0;
+        hssize_t v_end_s = outer_v_offset + (hssize_t)cv1;
+        if (v_start_s < 0 || v_end_s < 0) {
+            fprintf(stderr,
+                    "[DURIN] Error: negative virtual offset after clipping (v_start=%lld, v_end=%lld)\n",
+                    (long long)v_start_s, (long long)v_end_s);
+            H5Pclose(sp);
+            H5Dclose(src_d);
+            H5Fclose(src_f);
+            free(src_full);
+            free(src_file_rel);
+            free(src_dset_name);
+            return -1;
+        }
+        hsize_t v_start = (hsize_t)v_start_s;
+        hsize_t v_end = (hsize_t)v_end_s;
+        retval = append_leaf(b, src_full, src_dset_name, src_f, src_d, v_start, v_end, cs0, cs1,
                              opt, data_width_set);
         H5Pclose(sp);
         if (retval < 0) {
@@ -325,8 +389,8 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_pilatus_ds
         for (size_t i = 0; i < maps; ++i) {
             hsize_t outer_offset = blocks[b].frame_offset;
             /* FIX: Pass master_dir as the initial base directory */
-            if (flatten_mapping(&builder, master_dir, plist, i, outer_offset, opt,
-                                &data_width_set) < 0) {
+            if (flatten_mapping(&builder, master_dir, plist, i, (hssize_t)outer_offset, opt,
+                                &data_width_set, 0, 0, 0) < 0) {
                 retval = -1;
                 break;
             }
