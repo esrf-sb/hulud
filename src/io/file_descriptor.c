@@ -4,7 +4,9 @@
  * Descriptor factory and lifecycle logic split from file.c.
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "io/file.h"
 

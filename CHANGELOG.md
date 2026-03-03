@@ -1,6 +1,9 @@
 # Changelog
 
 All notable changes to the Durin VDS project will be documented in this file.
+## [1.4.3] -  2026-02-10
+- **Bug:** - Building error on apptainer
+
 ## [1.4.2] -  2026-01-19
 ### Known Issues
 - **Bug:** - Enhance Pilatus dataset handling for non-contiguous frames

@@ -1,18 +1,14 @@
-/*
- * Corrected vds_map.c
- * Fix: Replaced implicit 'strdup' with internal 'dupstr' helper.
- */
 #include "vds_map.h"
 
 #include <hdf5.h>
-#include <libgen.h> /* Required for dirname */
-#include <limits.h> /* Required for PATH_MAX */
+#include <libgen.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "core/err.h"
-#include "filters.h"
+#include "compression/bitshuffle_lz4.h"
 
 struct MapBuilder {
     struct FrameMapEntry* entries;

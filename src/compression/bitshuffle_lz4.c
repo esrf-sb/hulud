@@ -3,7 +3,7 @@
  * Author: Charles Mita
  */
 
-#include "filters.h"
+#include "compression/bitshuffle_lz4.h"
 
 #include <stdio.h>
 

@@ -203,7 +203,12 @@ int get_detector_info(const hid_t fid, struct ds_desc_t** desc) {
     int retval = 0;
     struct det_visit_objects_t objects = {0};
 
+#if defined(H5Ovisit_vers) && (H5Ovisit_vers >= 3)
+    if (H5Ovisit(fid, H5_INDEX_NAME, H5_ITER_INC, &det_visit_callback, &objects, H5O_INFO_BASIC) <
+        0) {
+#else
     if (H5Ovisit(fid, H5_INDEX_NAME, H5_ITER_INC, &det_visit_callback, &objects) < 0) {
+#endif
         clear_det_visit_objects(&objects);
         ERROR_JUMP(-1, done, "Error during H5Ovisit callback");
     }

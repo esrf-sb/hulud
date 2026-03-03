@@ -11,7 +11,7 @@
 
 #include "core/err.h"
 #include "io/file.h"
-#include "filters.h"
+#include "compression/bitshuffle_lz4.h"
 #include "core/internal.h"
 
 /* Build the fast index of raw chunk offsets for every mapped frame. */
@@ -54,7 +54,6 @@ int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
             unsigned filter_mask;
 
             /* Use HDF5 to calculate the file offset */
-            /* H5Dget_chunk_info_by_coord works on 1.10+ */
             if (H5Dget_chunk_info_by_coord(E->src_dset_id, chunk_offset, &filter_mask, &byte_addr,
                                            &size) < 0) {
                 fprintf(stderr, "[DURIN] Failed to get chunk info for frame %d\n", global_frame);
@@ -91,14 +90,13 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
     const struct opt_pilatus_ds_desc_t* opt = (const void*)d;
     size_t expected = (size_t)d->data_width * (size_t)d->dims[1] * (size_t)d->dims[2];
 
-    /* Bounds check */
     if (f < 0 || (hsize_t)f >= d->dims[0]) return -1;
 
     struct ParallelFrameIndex* idx = &opt->fast_index[f];
 
     /* Check if index is valid (fd must be > 0) */
     if (idx->fd <= 0) {
-        /* Gap in mapping: return a zero-filled frame */
+        /* Gap in mapping: return a zero-filled frame. TO DO: DISCUSS WITH OLOF */
         memset(buf, 0, expected);
         return 0;
     }

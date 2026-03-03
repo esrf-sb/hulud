@@ -3,17 +3,11 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  # The core library required
   - hdf5
-  # Build tool
-  - zlib          # <— this is what you’re missing
+  - zlib
   - make
-  # Compiler toolchains (Platform agnostic meta-packages)
-  # These ensure you have gcc/clang and the necessary linker tools
   - c-compiler
   - fortran-compiler
-  # OpenMP support (required by -fopenmp flag in your Makefile)
-  - libgomp      # for Linux
-  - llvm-openmp  # for macOS
-  # Standard C libraries and headers
-  - sysroot_linux-64  # only used if on Linux, ignored on Macconda
+  - libgomp      
+  - llvm-openmp
+  - sysroot_linux-64 

@@ -4,30 +4,41 @@ project(durin C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+if(NOT CMAKE_CONFIGURATION_TYPES AND (NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL ""))
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 # --- Dependencies ---
 find_package(HDF5 REQUIRED COMPONENTS C HL)
 find_package(Threads REQUIRED)
 
-# --- Include Directories ---
-# Add public include dir for our library
+set(DURIN_HDF5_LIBS HDF5::HDF5)
+if(TARGET HDF5::HL)
+    list(APPEND DURIN_HDF5_LIBS HDF5::HL)
+elseif(TARGET hdf5_hl-shared)
+    list(APPEND DURIN_HDF5_LIBS hdf5_hl-shared)
+elseif(DEFINED HDF5_HL_LIBRARIES AND HDF5_HL_LIBRARIES)
+    list(APPEND DURIN_HDF5_LIBS ${HDF5_HL_LIBRARIES})
+else()
+    message(FATAL_ERROR "HDF5 HL library target not found; required for H5DOread_chunk")
+endif()
+
+
 include_directories(include)
 include_directories(src)
-# Add external dependency include dir
-include_directories(bslz4/src)
+include_directories(third_party/bslz4/src)
 
 # --- 1. External Dependency (bslz4) ---
 # We build bslz4 as a static library that we can link against.
-file(GLOB BSLZ4_SRCS "bslz4/src/*.c")
+file(GLOB BSLZ4_SRCS "third_party/bslz4/src/*.c")
 add_library(bslz4_bundled STATIC ${BSLZ4_SRCS})
-target_include_directories(bslz4_bundled PUBLIC "bslz4/src")
+target_include_directories(bslz4_bundled PUBLIC "third_party/bslz4/src")
 
 # --- 2. Durin Core Library (Static) ---
-# This library contains the core logic (file parsing, VDS mapping, etc.)
-# It is static because it's an internal component for the plugin and benchmark tool.
 add_library(durin_core STATIC
     src/io/file.c
     src/io/file_descriptor.c
-    src/filters.c
+    src/compression/bitshuffle_lz4.c
     src/detector/nexus.c
     src/detector/pilatus.c
     src/core/utils.c
@@ -35,22 +46,23 @@ add_library(durin_core STATIC
     src/io/readers.c
     src/core/err.c
 )
-target_link_libraries(durin_core PRIVATE HDF5::HDF5 bslz4_bundled Threads::Threads)
+target_link_libraries(durin_core PRIVATE ${DURIN_HDF5_LIBS} bslz4_bundled Threads::Threads)
 
 # --- 3. Durin XDS Plugin (Shared Library) ---
 # This is the main output for XDS.
 add_library(durin-plugin SHARED
-    src/plugin.c
+    src/api/plugin_api.c
+    src/plugin/runtime.c
 )
 # XDS expects a specific name, e.g. durin-plugin.so
 set_target_properties(durin-plugin PROPERTIES PREFIX "" OUTPUT_NAME "durin-plugin")
 target_link_libraries(durin-plugin PRIVATE durin_core)
 
 # --- 4. Benchmark Tool ---
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/benchmark.c")
-    add_executable(benchmark src/benchmark.c)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark.c")
+    add_executable(benchmark tools/benchmark.c)
     # The benchmark tool needs to link to the core library and HDF5.
-    target_link_libraries(benchmark PRIVATE durin_core HDF5::HDF5 -ldl)
+    target_link_libraries(benchmark PRIVATE durin_core ${DURIN_HDF5_LIBS} -ldl)
 endif()
 
 # --- Installation (Optional but good practice) ---

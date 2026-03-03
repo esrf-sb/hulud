@@ -1,7 +1,9 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "core/internal.h"
 #include "core/err.h"
-#include "filters.h"
+#include "compression/bitshuffle_lz4.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
