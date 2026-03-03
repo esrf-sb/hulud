@@ -1,0 +1,28 @@
+[workspace]
+name = "durin"
+version = "1.4.4"
+authors = ["Ludovic Broche <ludovic.broche@esrf.fr>"]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+# Toolchain
+c-compiler = "*"
+fortran-compiler = "*"
+make = "*"
+sysroot_linux-64 = "*"
+
+# Runtime / libs
+hdf5 = "*"
+zlib = "*"
+libgomp = "*"
+
+# Dev tools
+valgrind = "*"
+pkg-config = "*"
+libcurl = ">=8.18.0,<9"
+
+[tasks]
+build = "make"
+test = "make test"
+clean = "make clean"

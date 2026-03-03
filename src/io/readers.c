@@ -9,9 +9,10 @@
 #include <string.h>
 #include <unistd.h> /* For pread() */
 
-#include "err.h"
-#include "file.h"
+#include "core/err.h"
+#include "io/file.h"
 #include "filters.h"
+#include "core/internal.h"
 
 /* Build the fast index of raw chunk offsets for every mapped frame. */
 int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
@@ -91,7 +92,7 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
     size_t expected = (size_t)d->data_width * (size_t)d->dims[1] * (size_t)d->dims[2];
 
     /* Bounds check */
-    if (f < 0 || f >= d->dims[0]) return -1;
+    if (f < 0 || (hsize_t)f >= d->dims[0]) return -1;
 
     struct ParallelFrameIndex* idx = &opt->fast_index[f];
 
@@ -140,50 +141,50 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
     int used_fallback = 0;
 
     for (int i = 0; i < opt->n_map_entries; ++i) {
-        struct FrameMapEntry* E = &opt->frame_map_entries[i];
-        if (f < E->vds_start || f > E->vds_end) continue;
+        struct FrameMapEntry* entry = &opt->frame_map_entries[i];
+        if (f < 0 || (hsize_t)f < entry->vds_start || (hsize_t)f > entry->vds_end) continue;
         found = 1;
 
-        hsize_t li = E->src_start + (f - E->vds_start);
+        hsize_t li = entry->src_start + ((hsize_t)f - entry->vds_start);
         hsize_t off[3] = {li, 0, 0}, size[3] = {1, d->dims[1], d->dims[2]};
 
-        if (E->direct_read) {
+        if (entry->direct_read) {
             uint32_t mask = 0;
             hsize_t sz = 0;
-            if (E->chunk_info_valid && E->cached_chunk_index == li) {
-                sz = E->cached_chunk_bytes;
-                mask = E->cached_chunk_mask;
+            if (entry->chunk_info_valid && entry->cached_chunk_index == li) {
+                sz = entry->cached_chunk_bytes;
+                mask = entry->cached_chunk_mask;
             } else {
                 haddr_t addr = 0;
-                if (H5Dget_chunk_info_by_coord(E->src_dset_id, off, &mask, &addr, &sz) < 0 ||
+                if (H5Dget_chunk_info_by_coord(entry->src_dset_id, off, &mask, &addr, &sz) < 0 ||
                     sz == 0) {
-                    if (H5Dget_chunk_storage_size(E->src_dset_id, off, &sz) < 0 || sz == 0) {
+                    if (H5Dget_chunk_storage_size(entry->src_dset_id, off, &sz) < 0 || sz == 0) {
                         used_fallback = 1;
                         goto regular_read;
                     }
                 }
-                E->cached_chunk_bytes = sz;
-                E->cached_chunk_mask = mask;
-                E->cached_chunk_index = li;
-                E->chunk_info_valid = 1;
+                entry->cached_chunk_bytes = sz;
+                entry->cached_chunk_mask = mask;
+                entry->cached_chunk_index = li;
+                entry->chunk_info_valid = 1;
             }
             void* tmp = buf;
-            if (E->has_bs_filter) {
-                if (!E->scratch || E->scratch_size < (size_t)sz) {
-                    void* newbuf = realloc(E->scratch, sz);
+            if (entry->has_bs_filter) {
+                if (!entry->scratch || entry->scratch_size < (size_t)sz) {
+                    void* newbuf = realloc(entry->scratch, sz);
                     if (!newbuf) {
                         ERROR_JUMP(-1, done, "Out of memory for chunk buffer");
                     }
-                    E->scratch = newbuf;
-                    E->scratch_size = (size_t)sz;
+                    entry->scratch = newbuf;
+                    entry->scratch_size = (size_t)sz;
                 }
-                tmp = E->scratch;
+                tmp = entry->scratch;
             }
-            if (H5DOread_chunk(E->src_dset_id, H5P_DEFAULT, off, &mask, tmp) < 0) {
+            if (H5DOread_chunk(entry->src_dset_id, H5P_DEFAULT, off, &mask, tmp) < 0) {
                 ERROR_JUMP(-1, done, "H5DOread_chunk failed");
             }
-            if (E->has_bs_filter) {
-                int dec = bslz4_decompress(E->bs_params, sz, tmp,
+            if (entry->has_bs_filter) {
+                int dec = bslz4_decompress(entry->bs_params, sz, tmp,
                                            d->data_width * d->dims[1] * d->dims[2], buf);
                 if (dec < 0) {
                     ERROR_JUMP(-1, done, "Bitshuffle-LZ4 decompress failed");
@@ -194,7 +195,7 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
 
     regular_read:
         (void)used_fallback; /* Silence unused var warning */
-        hid_t fs = H5Dget_space(E->src_dset_id);
+        hid_t fs = H5Dget_space(entry->src_dset_id);
         if (fs < 0) ERROR_JUMP(-1, done, "H5Dget_space failed");
         H5Sselect_hyperslab(fs, H5S_SELECT_SET, off, NULL, size, NULL);
         hid_t ms = H5Screate_simple(3, size, NULL);
@@ -202,13 +203,13 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
             H5Sclose(fs);
             ERROR_JUMP(-1, done, "H5Screate_simple failed");
         }
-        hid_t t = H5Dget_type(E->src_dset_id);
+        hid_t t = H5Dget_type(entry->src_dset_id);
         if (t < 0) {
             H5Sclose(ms);
             H5Sclose(fs);
             ERROR_JUMP(-1, done, "H5Dget_type failed");
         }
-        if (H5Dread(E->src_dset_id, t, ms, fs, H5P_DEFAULT, buf) < 0) {
+        if (H5Dread(entry->src_dset_id, t, ms, fs, H5P_DEFAULT, buf) < 0) {
             H5Tclose(t);
             H5Sclose(ms);
             H5Sclose(fs);
@@ -227,5 +228,78 @@ done:
         memset(buf, 0, expected);
         return 0;
     }
+    return retval;
+}
+
+/* --- Standard HDF5 Readers (Moved from file.c) --- */
+
+static hid_t CACHED_DID = 0;
+static char CACHED_DS_NAME[MAX_NAME_LEN] = {0};
+
+void reset_dataset_cache(void) {
+    if (CACHED_DID > 0) {
+        H5Dclose(CACHED_DID);
+        CACHED_DID = 0;
+    }
+    memset(CACHED_DS_NAME, 0, sizeof(CACHED_DS_NAME));
+}
+
+int get_frame_simple(const struct ds_desc_t* desc, const char* name, const hsize_t* frame_idx,
+                     const hsize_t* frame_size, void* buffer) {
+    int retval = 0;
+    hid_t ds_id = 0, s_id = 0, ms_id = 0, t_id = 0;
+
+    ds_id = H5Dopen2(desc->data_g_id, name, H5P_DEFAULT);
+    if (ds_id <= 0) ERROR_JUMP(-1, done, "Unable to open dataset");
+
+    s_id = H5Dget_space(ds_id);
+    t_id = H5Dget_type(ds_id);
+    H5Sselect_hyperslab(s_id, H5S_SELECT_SET, frame_idx, NULL, frame_size, NULL);
+    ms_id = H5Screate_simple(3, frame_size, frame_size);
+
+    if (H5Dread(ds_id, t_id, ms_id, s_id, H5P_DEFAULT, buffer) < 0) {
+        ERROR_JUMP(-1, close_mspace, "Error reading dataset");
+    }
+
+close_mspace: H5Sclose(ms_id);
+    H5Sclose(s_id);
+    H5Tclose(t_id);
+    H5Dclose(ds_id);
+done:
+    return retval;
+}
+
+int get_frame_from_chunk(const struct ds_desc_t* desc, const char* ds_name,
+                         const hsize_t* frame_idx, const hsize_t* frame_size, void* buffer) {
+    hid_t d_id = 0;
+    hsize_t c_offset[3] = {frame_idx[0], 0, 0};
+    uint32_t c_filter_mask = 0;
+    hsize_t c_bytes = 0;
+    int retval = 0;
+    (void)frame_size;
+
+    if (frame_idx[1] != 0 || frame_idx[2] != 0) {
+        ERROR_JUMP(-1, done, "Require frame selection starts at [n, 0, 0]");
+    }
+
+    if (CACHED_DID > 0 && strcmp(ds_name, CACHED_DS_NAME) == 0) {
+        d_id = CACHED_DID;
+    } else {
+        if (CACHED_DID > 0) { H5Dclose(CACHED_DID); CACHED_DID = 0; }
+        d_id = H5Dopen(desc->data_g_id, ds_name, H5P_DEFAULT);
+        if (d_id < 0) ERROR_JUMP(-1, done, "Error opening dataset");
+        CACHED_DID = d_id;
+        strncpy(CACHED_DS_NAME, ds_name, sizeof(CACHED_DS_NAME) - 1);
+    }
+
+    if (H5Dget_chunk_storage_size(d_id, c_offset, &c_bytes) < 0 || c_bytes == 0) {
+        ERROR_JUMP(-1, done, "Error reading chunk size");
+    }
+
+    if (H5DOread_chunk(d_id, H5P_DEFAULT, c_offset, &c_filter_mask, buffer) < 0) {
+        ERROR_JUMP(-1, done, "Error reading chunk");
+    }
+
+done:
     return retval;
 }

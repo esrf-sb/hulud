@@ -3,7 +3,7 @@
  * Author: Charles Mita
  */
 
-#include "err.h"
+#include "core/err.h"
 
 #include <hdf5.h>
 #include <stdio.h>
@@ -45,6 +45,7 @@ void push_error_stack(const char* file, const char* func, int line, int err, con
 
 herr_t h5e_walk_callback(unsigned int n, const struct H5E_error2_t* err, void* client_data) {
     herr_t retval = 0;
+    (void)client_data;
     /* only read the message for the innermost stack frame - the rest are just
      * noise */
     if (n == 0) {

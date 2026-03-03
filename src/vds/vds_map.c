@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "err.h"
+#include "core/err.h"
 #include "filters.h"
 
 struct MapBuilder {

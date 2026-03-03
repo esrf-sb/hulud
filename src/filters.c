@@ -8,7 +8,7 @@
 #include <stdio.h>
 
 #include "bitshuffle.h"
-#include "err.h"
+#include "core/err.h"
 
 /* Required prototypes from bitshuffle.c but not included in header */
 uint64_t bshuf_read_uint64_BE(const void* buffer);

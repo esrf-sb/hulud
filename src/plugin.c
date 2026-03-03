@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "file.h"
+#include "io/file.h"
 #include "filters.h"
 
 #define ERROR_OUTPUT stderr

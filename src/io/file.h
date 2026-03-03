@@ -4,7 +4,7 @@
 #include <hdf5.h>
 #include <stdint.h>
 
-#include "err.h"      // for ERROR_JUMP and error APIs
+#include "core/err.h"      // for ERROR_JUMP and error APIs
 #include "filters.h"  // for BS_H5_N_PARAMS and bitshuffle params
 
 #ifndef MAX_PATH_LEN
