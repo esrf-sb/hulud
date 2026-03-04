@@ -55,7 +55,7 @@ add_library(durin-plugin SHARED
 )
 # XDS expects a specific name, e.g. durin-plugin.so
 set_target_properties(durin-plugin PROPERTIES PREFIX "" OUTPUT_NAME "durin-plugin")
-target_link_libraries(durin-plugin PRIVATE durin_core)
+target_link_libraries(durin-plugin PRIVATE durin_core ${DURIN_HDF5_LIBS} Threads::Threads)
 
 # --- 4. Benchmark Tool ---
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark.c")
