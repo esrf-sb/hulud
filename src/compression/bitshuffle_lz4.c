@@ -10,13 +10,11 @@
 #include "bitshuffle.h"
 #include "core/err.h"
 
-/* Required prototypes from bitshuffle.c but not included in header */
 uint64_t bshuf_read_uint64_BE(const void* buffer);
 uint32_t bshuf_read_uint32_BE(const void* buffer);
 
 /*
- * Derived from the h5 filter code from the bitshuffle project (not included
- * here)
+ * Derived from the h5 filter code from the bitshuffle project 
  */
 int bslz4_decompress(const unsigned int* bs_params, size_t in_size, void* in_buffer,
                      size_t out_size, void* out_buffer) {

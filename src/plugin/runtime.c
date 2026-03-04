@@ -18,7 +18,7 @@
 
 #define ERROR_OUTPUT stderr
 
-/* mask bits loosely based on what Neggia does */
+// mask bits loosely based on what Neggia does
 #define COPY_AND_MASK(in, out, size, mask)       \
     {                                            \
         int i;                                   \
@@ -54,7 +54,7 @@ static pthread_mutex_t plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int h5_atexit_configured = 0;
 static int apply_mask_and_cast = 1;
 extern int durin_debug_enabled;
-/* True only when the selected reader does not touch the HDF5 API (parallel fast-path) */
+// True only when the selected reader does not touch the HDF5 API (parallel fast-path)
 static int data_reader_thread_safe = 0;
 
 struct thread_tmp_buffer {
@@ -133,7 +133,7 @@ done:
 extern "C" {
 #endif
 
-/**
+/*
  * Open an HDF5 master file and prepare the plugin state.
  * Fills version info, configures HDF5 error handling, and builds the detector
  * descriptor (including optional pixel mask).

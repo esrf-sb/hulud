@@ -16,7 +16,7 @@ struct MapBuilder {
     size_t cap;
 };
 
-/* Internal helper to duplicate string (avoids POSIX dependency issues with strdup) */
+/* Internal helper to duplicate string*/
 static char* dupstr(const char* s) {
     size_t len = strlen(s) + 1;
     char* out = malloc(len);
@@ -35,10 +35,6 @@ static int ensure_capacity(struct MapBuilder* b, size_t extra) {
     return 0;
 }
 
-/* * FIX: Robust path resolution.
- * If 'rel' is absolute, use it.
- * If 'rel' is relative, prepend 'base_dir'.
- */
 static char* resolve_path(const char* base_dir, const char* rel) {
     if (rel[0] == '/') return dupstr(rel);  // Already absolute
 
@@ -48,7 +44,6 @@ static char* resolve_path(const char* base_dir, const char* rel) {
     char* full = malloc(len);
     if (!full) return NULL;
 
-    // Check if base_dir already ends with /
     if (base_dir[strlen(base_dir) - 1] == '/') {
         snprintf(full, len, "%s%s", base_dir, rel);
     } else {
@@ -223,9 +218,6 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
         size_t inner = 0;
         H5Pget_virtual_count(sp, &inner);
 
-        /* * FIX: Update base directory for nested VDS.
-         * Using internal dupstr instead of strdup.
-         */
         char* new_base_dir = dupstr(src_full);
         char* dname = dirname(new_base_dir);  // Modifies new_base_dir in place
 

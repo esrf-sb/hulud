@@ -229,7 +229,7 @@ done:
     return retval;
 }
 
-/* --- Standard HDF5 Readers (Moved from file.c) --- */
+/* --- Standard HDF5 Readers */
 
 static hid_t CACHED_DID = 0;
 static char CACHED_DS_NAME[MAX_NAME_LEN] = {0};

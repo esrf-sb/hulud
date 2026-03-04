@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to the Durin VDS project will be documented in this file.
+
+## [1.4.4] - 2026-03-04
+- **Reformating Code:** - Code restructuration and documentation
+- **Build** - Adding pixi env. 
+
 ## [1.4.3] -  2026-02-10
 - **Bug:** - Building error on apptainer
 
@@ -17,7 +22,7 @@ All notable changes to the Durin VDS project will be documented in this file.
 
 ## [1.4.0] -  2025-12-16
 ### Known Issues
-- **Performance:** - New optimize reader (multiprocessing) for non vds/lima2 data. Performance little bit faster than neggia.
+- **Performance:** - New optimize reader (multiprocessing) for non vds/lima2 data.
 
 ## [1.3.1] -  2025-12-11
 ### Known Issues
@@ -52,6 +57,3 @@ All notable changes to the Durin VDS project will be documented in this file.
 
 ### Known Issues
 - **Performance:** Read operations on GPFS are slow due to the standard HDF5 library performing repetitive mapping lookups and locking for every frame request.
-
-
-![alt text](performance_comparaison.png)

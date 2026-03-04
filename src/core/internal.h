@@ -22,7 +22,6 @@ char* canonical_file_path(hid_t fid, const char* base_dir);
 double scale_from_units(const char* unit_string);
 
 /* --- readers.c --- */
-/* Standard HDF5 readers moved from file.c */
 int get_frame_simple(const struct ds_desc_t* desc, const char* name, const hsize_t* frame_idx,
                      const hsize_t* frame_size, void* buffer);
 int get_frame_from_chunk(const struct ds_desc_t* desc, const char* ds_name,

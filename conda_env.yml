@@ -1,13 +1,20 @@
 name: durin-build
 channels:
   - conda-forge
-  - defaults
 dependencies:
-  - hdf5
-  - zlib
-  - make
+  # Toolchain
   - c-compiler
   - fortran-compiler
-  - libgomp      
-  - llvm-openmp
-  - sysroot_linux-64 
+  - make
+  - sysroot_linux-64
+  - cmake >=4.2.3,<5
+  - pkg-config
+
+  # Runtime / libs
+  - hdf5
+  - zlib
+  - libgomp
+  - libcurl >=8.18.0,<9
+
+  # Dev tools
+  - valgrind

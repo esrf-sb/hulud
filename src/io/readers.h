@@ -10,4 +10,4 @@ int build_parallel_index(struct opt_pilatus_ds_desc_t* opt);
 /* Thread-safe raw reader using precomputed offsets. */
 int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf);
 
-#endif /* READERS_H */
+#endif

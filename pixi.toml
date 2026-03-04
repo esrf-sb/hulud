@@ -21,6 +21,7 @@ libgomp = "*"
 valgrind = "*"
 pkg-config = "*"
 libcurl = ">=8.18.0,<9"
+cmake = ">=4.2.3,<5"
 
 [tasks]
 build = "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
