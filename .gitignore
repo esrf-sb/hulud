@@ -7,3 +7,7 @@ build/
 *.o
 *.mod
 *.so
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+.envrc

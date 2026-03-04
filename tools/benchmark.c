@@ -10,19 +10,13 @@
 #include <time.h>
 #include <unistd.h>
 
-/* --- 1. Define Plugin API Function Types --- */
-typedef void (*plugin_open_t)(const char* filename, int info[1024], int* error_flag);
-typedef void (*plugin_get_header_t)(int* nx, int* ny, int* nbytes, float* qx, float* qy,
-                                    int* number_of_frames, int info[1024], int* error_flag);
-typedef void (*plugin_get_data_t)(int* frame_number, int* nx, int* ny, int* data_array,
-                                  int info[1024], int* error_flag);
-typedef void (*plugin_close_t)(int* error_flag);
+#include <durin/plugin_api.h>
 
 /* --- 2. Global Symbol Pointers --- */
-static plugin_open_t ptr_plugin_open = NULL;
-static plugin_get_header_t ptr_plugin_get_header = NULL;
-static plugin_get_data_t ptr_plugin_get_data = NULL;
-static plugin_close_t ptr_plugin_close = NULL;
+static plugin_open_fn ptr_plugin_open = NULL;
+static plugin_get_header_fn ptr_plugin_get_header = NULL;
+static plugin_get_data_fn ptr_plugin_get_data = NULL;
+static plugin_close_fn ptr_plugin_close = NULL;
 
 /* --- 3. Helpers --- */
 double get_time() {
@@ -172,12 +166,12 @@ int main(int argc, char** argv) {
     }
 
     /* --- Resolve Symbols --- */
-    ptr_plugin_open = (plugin_open_t)load_symbol(handle, "plugin_open");
-    ptr_plugin_get_header = (plugin_get_header_t)load_symbol(handle, "plugin_get_header");
-    ptr_plugin_get_data = (plugin_get_data_t)load_symbol(handle, "plugin_get_data");
-    ptr_plugin_close = (plugin_close_t)load_symbol(handle, "plugin_close");
+    ptr_plugin_open = (plugin_open_fn)load_symbol(handle, "plugin_open");
+    ptr_plugin_get_header = (plugin_get_header_fn)load_symbol(handle, "plugin_get_header");
+    ptr_plugin_get_data = (plugin_get_data_fn)load_symbol(handle, "plugin_get_data");
+    ptr_plugin_close = (plugin_close_fn)load_symbol(handle, "plugin_close");
 
-    int info[1024] = {0};
+    int info[DURIN_PLUGIN_INFO_SIZE] = {0};
     int err = 0;
 
     /* --- Open File --- */

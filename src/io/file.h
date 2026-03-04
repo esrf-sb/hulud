@@ -4,8 +4,8 @@
 #include <hdf5.h>
 #include <stdint.h>
 
-#include "err.h"      // for ERROR_JUMP and error APIs
-#include "filters.h"  // for BS_H5_N_PARAMS and bitshuffle params
+#include "compression/bitshuffle_lz4.h" /* BS_H5_N_PARAMS and filter constants */
+#include "core/err.h"                   /* ERROR_JUMP and error APIs */
 
 #ifndef MAX_PATH_LEN
 #define MAX_PATH_LEN 4096
@@ -25,11 +25,11 @@ extern int durin_debug_enabled;
 
 /* Stores pre-calculated file location for a single frame to allow lock-free reading */
 struct ParallelFrameIndex {
-    int fd;                  /* OS File Descriptor */
-    long long byte_offset;   /* Byte offset in the file */
-    size_t chunk_size;       /* Compressed size in bytes */
-    unsigned int* bs_params; /* Pointer to compression params (borrowed from MapEntry) */
-    int has_bs_filter;       /* Whether this chunk needs bitshuffle-lz4 decompression */
+    int fd;                   // OS File Descriptor
+    long long byte_offset;    // Byte offset
+    size_t chunk_size;        // Compressed size in bytes
+    unsigned int* bs_params;  // Pointer to compression params (borrowed from MapEntry)
+    int has_bs_filter;        // bitshuffle-lz4 decompression
 };
 
 struct FrameMapEntry {
@@ -50,18 +50,17 @@ struct FrameMapEntry {
     hsize_t cached_chunk_index;
     void* scratch;
     size_t scratch_size;
-    int raw_fd; /* Open OS fd used by the fast-path reader */
+    int raw_fd;
 };
 
-struct det_visit_objects_t;  // Needed by file.c
-struct nxs_ds_desc_t;        // Used but not declared globally
+struct det_visit_objects_t;
+struct nxs_ds_desc_t;
 
 struct det_visit_objects_t {
     hid_t nxdata;
     hid_t nxdetector;
 };
 
-/* Base descriptor available everywhere */
 struct ds_desc_t {
     hsize_t dims[3];
     int data_width;
@@ -74,12 +73,12 @@ struct ds_desc_t {
     void (*free_desc)(struct ds_desc_t*);
 };
 
-/* Used for standard Pilatus & chunk-read path */
 struct pilatus_ds_desc_t {
     struct ds_desc_t base;
     int n_data_blocks;
     int* block_sizes;
-    hsize_t* block_starts; /* 0-based global frame index for each block (uses image_nr_low when available) */
+    hsize_t* block_starts; /* 0-based global frame index for each block (uses image_nr_low when
+                              available) */
     char** block_names;    /* dataset names (e.g. data_000123) kept for non-contiguous numbering */
     int (*frame_func)(const struct ds_desc_t*, const char*, const hsize_t*, const hsize_t*, void*);
 };
@@ -88,7 +87,6 @@ struct nxs_ds_desc_t {
     struct ds_desc_t base;
 };
 
-/* Extended Pilatus descriptor with VDS bypass */
 struct opt_pilatus_ds_desc_t {
     struct pilatus_ds_desc_t base;
 
@@ -99,14 +97,10 @@ struct opt_pilatus_ds_desc_t {
     struct ParallelFrameIndex* fast_index;
 };
 
-/** HDF5-based fallback reader for a mapped frame. */
 int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf);
-/** Build fast chunk index for parallel raw access. */
 int build_parallel_index(struct opt_pilatus_ds_desc_t* opt);
-/** Thread-safe raw reader that uses the fast index. */
 int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf);
 
-/** Walk the file and construct an appropriate detector/data descriptor. */
 int get_detector_info(hid_t file_id, struct ds_desc_t** desc);
 void clear_det_visit_objects(struct det_visit_objects_t* objects);
 int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_t* visit_result);

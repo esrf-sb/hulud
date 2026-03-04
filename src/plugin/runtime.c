@@ -3,21 +3,22 @@
  * Author: Charles Mita
  */
 
-#include "plugin.h"
+#include "plugin/runtime.h"
 
+#include <durin/plugin_api.h>
 #include <hdf5.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "file.h"
-#include "filters.h"
+#include "io/file.h"
 
 #define ERROR_OUTPUT stderr
 
-/* mask bits loosely based on what Neggia does */
+// mask bits loosely based on what Neggia does
 #define COPY_AND_MASK(in, out, size, mask)       \
     {                                            \
         int i;                                   \
@@ -53,7 +54,7 @@ static pthread_mutex_t plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int h5_atexit_configured = 0;
 static int apply_mask_and_cast = 1;
 extern int durin_debug_enabled;
-/* True only when the selected reader does not touch the HDF5 API (parallel fast-path) */
+// True only when the selected reader does not touch the HDF5 API (parallel fast-path)
 static int data_reader_thread_safe = 0;
 
 struct thread_tmp_buffer {
@@ -92,7 +93,7 @@ static void* get_thread_tmp_buffer(size_t needed) {
 
 static int env_truthy(const char* v) { return v && v[0] != '0' && v[0] != '\0'; }
 
-void fill_info_array(int info[1024]) {
+static void fill_info_array(int info[DURIN_PLUGIN_INFO_SIZE]) {
     info[0] = DLS_CUSTOMER_ID;
     info[1] = VERSION_MAJOR;
     info[2] = VERSION_MINOR;
@@ -100,7 +101,8 @@ void fill_info_array(int info[1024]) {
     info[4] = VERSION_TIMESTAMP;
 }
 
-int convert_to_int_and_mask(void* in_buffer, int d_width, int* out_buffer, int length, int* mask) {
+static int convert_to_int_and_mask(void* in_buffer, int d_width, int* out_buffer, int length,
+                                   int* mask) {
     int retval = 0;
     if (d_width == sizeof(signed char)) {
         signed char* in = in_buffer;
@@ -131,12 +133,13 @@ done:
 extern "C" {
 #endif
 
-/**
+/*
  * Open an HDF5 master file and prepare the plugin state.
  * Fills version info, configures HDF5 error handling, and builds the detector
  * descriptor (including optional pixel mask).
  */
-void plugin_open(const char* filename, int info[1024], int* error_flag) {
+void durin_plugin_runtime_open(const char* filename, int info[DURIN_PLUGIN_INFO_SIZE],
+                               int* error_flag) {
     int retval = 0;
     *error_flag = 0;
 
@@ -216,8 +219,9 @@ done:
 /**
  * Retrieve detector geometry and frame count from the open descriptor.
  */
-void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
-                       int* number_of_frames, int info[1024], int* error_flag) {
+void durin_plugin_runtime_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
+                                     int* number_of_frames, int info[DURIN_PLUGIN_INFO_SIZE],
+                                     int* error_flag) {
     int err = 0;
     int retval = 0;
     double x_pixel_size, y_pixel_size;
@@ -243,13 +247,14 @@ void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
         struct pilatus_ds_desc_t* pilatus_desc = (struct pilatus_ds_desc_t*)data_desc;
         if (pilatus_desc->block_sizes && pilatus_desc->n_data_blocks > 0) {
             hsize_t sum = 0;
-            for (int i = 0; i < pilatus_desc->n_data_blocks; ++i) sum += (hsize_t)pilatus_desc->block_sizes[i];
+            for (int i = 0; i < pilatus_desc->n_data_blocks; ++i)
+                sum += (hsize_t)pilatus_desc->block_sizes[i];
             if (sum < INT_MAX) physical_frames = (int)sum;
         }
     }
     if (physical_frames > 0) {
-        info[5] = physical_frames;      /* mapped frames */
-        info[6] = *number_of_frames;    /* logical frames (including gaps) */
+        info[5] = physical_frames;   /* mapped frames */
+        info[6] = *number_of_frames; /* logical frames (including gaps) */
     }
 
 done:
@@ -264,8 +269,8 @@ done:
  * Read a frame (1-based index) into the caller-provided buffer.
  * Uses the fast path when possible; otherwise protects HDF5 calls with a mutex.
  */
-void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array, int info[1024],
-                     int* error_flag) {
+void durin_plugin_runtime_get_data(int* frame_number, int* nx, int* ny, int* data_array,
+                                   int info[DURIN_PLUGIN_INFO_SIZE], int* error_flag) {
     int retval = 0;
     int frame_size_px = data_desc->dims[1] * data_desc->dims[2];
     int need_lock = !data_reader_thread_safe;
@@ -334,7 +339,7 @@ done:
 /**
  * Close all plugin resources and release HDF5 handles.
  */
-void plugin_close(int* error_flag) {
+void durin_plugin_runtime_close(int* error_flag) {
     pthread_mutex_lock(&plugin_mutex);
     data_reader_thread_safe = 0;
     if (file_id) {

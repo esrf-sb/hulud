@@ -2,8 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "err.h"
-#include "file.h"
+#include "core/err.h"
+#include "io/file.h"
 
 #define COPY_AND_MASK(in, out, size, mask)       \
     {                                            \
