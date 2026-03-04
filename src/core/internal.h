@@ -2,6 +2,7 @@
 #define DURIN_INTERNAL_H
 
 #include <hdf5.h>
+
 #include "io/file.h"
 
 /* Global debug flag */

@@ -8,8 +8,6 @@
 #define _GNU_SOURCE
 #endif
 
-#include "io/file.h"
-
 #include <hdf5.h>
 #include <limits.h>
 #include <stdio.h>
@@ -19,6 +17,7 @@
 
 #include "core/err.h"
 #include "core/internal.h"
+#include "io/file.h"
 #include "io/readers.h"
 #include "vds/vds_map.h"
 
@@ -114,7 +113,8 @@ static int select_data_source(const struct det_visit_objects_t* visit_result, hi
     int detector_has_data = (detector_group_id > 0) && link_is_dataset(detector_group_id, "data");
     int nxdata_has_data_000001 =
         (visit_result->nxdata > 0) && link_is_dataset(visit_result->nxdata, "data_000001");
-    int nxdata_has_data = (visit_result->nxdata > 0) && link_is_dataset(visit_result->nxdata, "data");
+    int nxdata_has_data =
+        (visit_result->nxdata > 0) && link_is_dataset(visit_result->nxdata, "data");
 
     if (detector_has_data_000001) {
         *data_group_id = detector_group_id;
@@ -419,6 +419,6 @@ int create_dataset_descriptor(struct ds_desc_t** desc, struct det_visit_objects_
     configure_descriptor_interfaces(output_desc, &plan, free_reader);
     *desc = output_desc;
 
- done:
+done:
     return retval;
 }

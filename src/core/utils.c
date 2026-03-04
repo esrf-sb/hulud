@@ -1,13 +1,14 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include "core/internal.h"
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <limits.h>
-#include <unistd.h>
 #include <strings.h>
+#include <unistd.h>
+
+#include "core/internal.h"
 
 char* dup_cstr(const char* s) {
     size_t len = strlen(s) + 1;

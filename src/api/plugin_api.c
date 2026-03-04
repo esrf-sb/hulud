@@ -11,8 +11,8 @@ void plugin_open(const char* filename, int info[DURIN_PLUGIN_INFO_SIZE], int* er
     durin_plugin_runtime_open(filename, info, error_flag);
 }
 
-void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
-                       int* number_of_frames, int info[DURIN_PLUGIN_INFO_SIZE], int* error_flag) {
+void plugin_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy, int* number_of_frames,
+                       int info[DURIN_PLUGIN_INFO_SIZE], int* error_flag) {
     durin_plugin_runtime_get_header(nx, ny, nbytes, qx, qy, number_of_frames, info, error_flag);
 }
 

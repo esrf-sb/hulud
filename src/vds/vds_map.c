@@ -7,8 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "core/err.h"
 #include "compression/bitshuffle_lz4.h"
+#include "core/err.h"
 
 struct MapBuilder {
     struct FrameMapEntry* entries;
@@ -126,8 +126,8 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
  * Returns 0 if no overlap, 1 if clipped/kept.
  */
 static int clip_mapping_1d(hsize_t v0, hsize_t v1, hsize_t s0, hsize_t s1, int has_clip,
-                           hsize_t clip_start, hsize_t clip_end, hsize_t* out_v0,
-                           hsize_t* out_v1, hsize_t* out_s0, hsize_t* out_s1) {
+                           hsize_t clip_start, hsize_t clip_end, hsize_t* out_v0, hsize_t* out_v1,
+                           hsize_t* out_s0, hsize_t* out_s1) {
     if (!has_clip) {
         *out_v0 = v0;
         *out_v1 = v1;
@@ -177,8 +177,8 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
 
     /* Clip to a subset of the current vspace if requested */
     hsize_t cv0 = v0[0], cv1 = v1[0], cs0 = s0[0], cs1 = s1[0];
-    if (!clip_mapping_1d(v0[0], v1[0], s0[0], s1[0], has_clip, clip_start, clip_end, &cv0,
-                         &cv1, &cs0, &cs1)) {
+    if (!clip_mapping_1d(v0[0], v1[0], s0[0], s1[0], has_clip, clip_start, clip_end, &cv0, &cv1,
+                         &cs0, &cs1)) {
         free(src_file_rel);
         free(src_dset_name);
         return 0; /* No overlap with clip range */
@@ -230,8 +230,8 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
             /* Pass the new directory as the base for the inner mapping.
              * Clip inner mappings to [cs0..cs1] (source selection from outer mapping).
              */
-            if (flatten_mapping(b, dname, sp, j, inner_offset, opt, data_width_set, 1, cs0,
-                                cs1) < 0) {
+            if (flatten_mapping(b, dname, sp, j, inner_offset, opt, data_width_set, 1, cs0, cs1) <
+                0) {
                 retval = -1;
                 break;
             }
@@ -245,7 +245,8 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
         hssize_t v_end_s = outer_v_offset + (hssize_t)cv1;
         if (v_start_s < 0 || v_end_s < 0) {
             fprintf(stderr,
-                    "[DURIN] Error: negative virtual offset after clipping (v_start=%lld, v_end=%lld)\n",
+                    "[DURIN] Error: negative virtual offset after clipping (v_start=%lld, "
+                    "v_end=%lld)\n",
                     (long long)v_start_s, (long long)v_end_s);
             H5Pclose(sp);
             H5Dclose(src_d);
@@ -328,10 +329,11 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_pilatus_ds
             dims1 = block_dims[1];
             dims2 = block_dims[2];
         }
-        hsize_t block_offset =
-            (use_named_blocks && idx < opt->base.n_data_blocks) ? opt->base.block_starts[idx]
-                                                                : total_frames;
-        if (block_offset + block_dims[0] > total_frames) total_frames = block_offset + block_dims[0];
+        hsize_t block_offset = (use_named_blocks && idx < opt->base.n_data_blocks)
+                                   ? opt->base.block_starts[idx]
+                                   : total_frames;
+        if (block_offset + block_dims[0] > total_frames)
+            total_frames = block_offset + block_dims[0];
         struct VdsBlockInfo* tmp = realloc(blocks, (n_blocks + 1) * sizeof(*tmp));
         if (!tmp) {
             H5Pclose(plist);

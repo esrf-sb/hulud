@@ -9,10 +9,10 @@
 #include <string.h>
 #include <unistd.h> /* For pread() */
 
-#include "core/err.h"
-#include "io/file.h"
 #include "compression/bitshuffle_lz4.h"
+#include "core/err.h"
 #include "core/internal.h"
+#include "io/file.h"
 
 /* Build the fast index of raw chunk offsets for every mapped frame. */
 int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
@@ -259,7 +259,8 @@ int get_frame_simple(const struct ds_desc_t* desc, const char* name, const hsize
         ERROR_JUMP(-1, close_mspace, "Error reading dataset");
     }
 
-close_mspace: H5Sclose(ms_id);
+close_mspace:
+    H5Sclose(ms_id);
     H5Sclose(s_id);
     H5Tclose(t_id);
     H5Dclose(ds_id);
@@ -283,7 +284,10 @@ int get_frame_from_chunk(const struct ds_desc_t* desc, const char* ds_name,
     if (CACHED_DID > 0 && strcmp(ds_name, CACHED_DS_NAME) == 0) {
         d_id = CACHED_DID;
     } else {
-        if (CACHED_DID > 0) { H5Dclose(CACHED_DID); CACHED_DID = 0; }
+        if (CACHED_DID > 0) {
+            H5Dclose(CACHED_DID);
+            CACHED_DID = 0;
+        }
         d_id = H5Dopen(desc->data_g_id, ds_name, H5P_DEFAULT);
         if (d_id < 0) ERROR_JUMP(-1, done, "Error opening dataset");
         CACHED_DID = d_id;

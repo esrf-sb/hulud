@@ -71,7 +71,7 @@ done:
 
 void reset_error_stack() {
     stack.size = 0;
-    H5Eclear2(H5E_DEFAULT); // unnecessary ??
+    H5Eclear2(H5E_DEFAULT);  // unnecessary ??
 }
 
 void dump_error_stack(FILE* out) {

@@ -1,7 +1,8 @@
-#include "core/internal.h"
-#include "core/err.h"
 #include <stdlib.h>
 #include <string.h>
+
+#include "core/err.h"
+#include "core/internal.h"
 
 int get_nxs_dataset_dims(struct ds_desc_t* desc) {
     hid_t ds_id = 0, s_id = 0, t_id = 0;
@@ -149,19 +150,23 @@ int get_pixel_mask_impl(const struct ds_desc_t* desc, hid_t g_id, const char* pa
     if (rank == 2) {
         hsize_t read_rows = (dims[0] < expected_rows) ? dims[0] : (hsize_t)expected_rows;
         hsize_t read_cols = (dims[1] < expected_cols) ? dims[1] : (hsize_t)expected_cols;
-        H5Sselect_hyperslab(s_id, H5S_SELECT_SET, start_d, NULL, (hsize_t[]){read_rows, read_cols}, NULL);
+        H5Sselect_hyperslab(s_id, H5S_SELECT_SET, start_d, NULL, (hsize_t[]){read_rows, read_cols},
+                            NULL);
         hsize_t mem_dims[2] = {(hsize_t)expected_rows, (hsize_t)expected_cols};
         mem_space = H5Screate_simple(2, mem_dims, NULL);
-        H5Sselect_hyperslab(mem_space, H5S_SELECT_SET, start_m, NULL, (hsize_t[]){read_rows, read_cols}, NULL);
+        H5Sselect_hyperslab(mem_space, H5S_SELECT_SET, start_m, NULL,
+                            (hsize_t[]){read_rows, read_cols}, NULL);
     } else if (rank == 3) {
         if (dims[0] == 0) ERROR_JUMP(-1, close_space, "pixel_mask has zero frames");
         hsize_t read_rows = (dims[1] < expected_rows) ? dims[1] : (hsize_t)expected_rows;
         hsize_t read_cols = (dims[2] < expected_cols) ? dims[2] : (hsize_t)expected_cols;
-        count_d[1] = read_rows; count_d[2] = read_cols;
+        count_d[1] = read_rows;
+        count_d[2] = read_cols;
         H5Sselect_hyperslab(s_id, H5S_SELECT_SET, start_d, NULL, count_d, NULL);
         hsize_t mem_dims[3] = {1, (hsize_t)expected_rows, (hsize_t)expected_cols};
         mem_space = H5Screate_simple(3, mem_dims, NULL);
-        count_m[1] = read_rows; count_m[2] = read_cols;
+        count_m[1] = read_rows;
+        count_m[2] = read_cols;
         H5Sselect_hyperslab(mem_space, H5S_SELECT_SET, start_m, NULL, count_m, NULL);
     } else {
         ERROR_JUMP(-1, close_space, "Unsupported pixel_mask rank");

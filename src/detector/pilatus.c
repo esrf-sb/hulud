@@ -1,14 +1,15 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include "core/internal.h"
-#include "core/err.h"
-#include "compression/bitshuffle_lz4.h"
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 #include <ctype.h>
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "compression/bitshuffle_lz4.h"
+#include "core/err.h"
+#include "core/internal.h"
 
 static int validate_frame_number(const struct ds_desc_t* desc, int frame_number) {
     if (frame_number < 0 || (hsize_t)frame_number >= desc->dims[0]) {
@@ -76,7 +77,8 @@ int get_dectris_pilatus_frame(const struct ds_desc_t* desc, int n, void* buffer)
     }
 
     frame_idx[0] = (hsize_t)(n - (int)block_start_frame);
-    build_data_block_name(pilatus_desc, block_index, block_dataset_name, sizeof(block_dataset_name));
+    build_data_block_name(pilatus_desc, block_index, block_dataset_name,
+                          sizeof(block_dataset_name));
 
     retval = pilatus_desc->frame_func(desc, block_dataset_name, frame_idx, frame_size, buffer);
     if (retval < 0) ERROR_JUMP(retval, done, "");
@@ -142,17 +144,22 @@ static int compare_blocks_by_index(const void* a, const void* b) {
     return strcmp(A->name, B->name);
 }
 
-static herr_t collect_data_block_cb(hid_t g_id, const char* name, const H5L_info_t* info, void* op_data) {
+static herr_t collect_data_block_cb(hid_t g_id, const char* name, const H5L_info_t* info,
+                                    void* op_data) {
     (void)info;
     struct data_block_list* ctx = op_data;
     if (!name || strncmp(name, "data_", 5) != 0) return 0;
-    for (const char* p = name + 5; *p; ++p) if (!isdigit((unsigned char)*p)) return 0;
+    for (const char* p = name + 5; *p; ++p)
+        if (!isdigit((unsigned char)*p)) return 0;
 
     hid_t ds_id = H5Dopen2(g_id, name, H5P_DEFAULT);
     if (ds_id < 0) return 0;
 
     hid_t s_id = H5Dget_space(ds_id);
-    if (s_id < 0) { H5Dclose(ds_id); return 0; }
+    if (s_id < 0) {
+        H5Dclose(ds_id);
+        return 0;
+    }
     (void)H5Sget_simple_extent_ndims(s_id);
     hsize_t dims[3] = {0};
     H5Sget_simple_extent_dims(s_id, dims, NULL);
@@ -160,7 +167,10 @@ static herr_t collect_data_block_cb(hid_t g_id, const char* name, const H5L_info
     size_t width = H5Tget_size(t_id);
 
     if (ctx->data_width == 0) ctx->data_width = (int)width;
-    if (ctx->dim1 == 0) { ctx->dim1 = dims[1]; ctx->dim2 = dims[2]; }
+    if (ctx->dim1 == 0) {
+        ctx->dim1 = dims[1];
+        ctx->dim2 = dims[2];
+    }
 
     hsize_t start = 0, end = dims[0] ? dims[0] - 1 : 0;
     int has_range = 0;
@@ -179,7 +189,9 @@ static herr_t collect_data_block_cb(hid_t g_id, const char* name, const H5L_info
         if (a_high >= 0) H5Aclose(a_high);
     }
 
-    H5Tclose(t_id); H5Sclose(s_id); H5Dclose(ds_id);
+    H5Tclose(t_id);
+    H5Sclose(s_id);
+    H5Dclose(ds_id);
 
     if (ensure_block_capacity(ctx, ctx->used + 1) < 0) return -1;
     struct data_block_info* dst = &ctx->blocks[ctx->used++];
@@ -198,7 +210,8 @@ int get_dectris_pilatus_dataset_dims(struct ds_desc_t* desc) {
     struct data_block_list ctx = {0};
     hsize_t total_frames = 0;
 
-    if (H5Literate(desc->data_g_id, H5_INDEX_NAME, H5_ITER_NATIVE, NULL, collect_data_block_cb, &ctx) < 0)
+    if (H5Literate(desc->data_g_id, H5_INDEX_NAME, H5_ITER_NATIVE, NULL, collect_data_block_cb,
+                   &ctx) < 0)
         ERROR_JUMP(-1, done, "Error iterating data_* datasets");
     if (ctx.used == 0) ERROR_JUMP(-1, done, "No data_* datasets found");
 
@@ -304,8 +317,8 @@ static int set_direct_read_flags(hid_t dataset_id, struct FrameMapEntry* entry) 
             unsigned int flags = 0;
             unsigned int config = 0;
             size_t param_count = BS_H5_N_PARAMS;
-            H5Z_filter_t filter_type =
-                H5Pget_filter2(plist_id, 0, &flags, &param_count, entry->bs_params, 0, NULL, &config);
+            H5Z_filter_t filter_type = H5Pget_filter2(plist_id, 0, &flags, &param_count,
+                                                      entry->bs_params, 0, NULL, &config);
             if (filter_type == BS_H5_FILTER_ID) {
                 entry->direct_read = 1;
                 entry->has_bs_filter = 1;

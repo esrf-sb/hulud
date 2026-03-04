@@ -49,7 +49,6 @@ add_library(durin_core STATIC
 target_link_libraries(durin_core PRIVATE ${DURIN_HDF5_LIBS} bslz4_bundled Threads::Threads)
 
 # --- 3. Durin XDS Plugin (Shared Library) ---
-# This is the main output for XDS.
 add_library(durin-plugin SHARED
     src/api/plugin_api.c
     src/plugin/runtime.c
@@ -77,3 +76,17 @@ if(TARGET benchmark)
         RUNTIME DESTINATION bin
     )
 endif()
+
+
+file(GLOB_RECURSE ALL_SOURCE_FILES
+    "src/*.c"
+    "src/*.h"
+    "src/*.cpp"
+    "src/*.hpp"
+)
+
+add_custom_target(
+    format
+    COMMAND clang-format -style=file -i ${ALL_SOURCE_FILES}
+    COMMENT "Formatting source code with clang-format"
+)

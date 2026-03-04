@@ -85,7 +85,7 @@ static int read_nx_class_name(hid_t group_id, char* nx_class, size_t nx_class_si
         free(value);
     }
 
- done:
+done:
     if (type_id > 0) H5Tclose(type_id);
     if (attr_id > 0) H5Aclose(attr_id);
     return read_ok;
@@ -103,7 +103,8 @@ static void maybe_update_nxdata(hid_t root_id, const char* name, hid_t candidate
 
     if (!replace && !candidate_is_entry && output_data->nxdata > 0) {
         char current_path[MAX_PATH_LEN] = {0};
-        ssize_t current_len = get_group_path(output_data->nxdata, current_path, sizeof(current_path));
+        ssize_t current_len =
+            get_group_path(output_data->nxdata, current_path, sizeof(current_path));
         int current_is_entry = path_is_entry_data(current_path, current_len);
         int current_has_data = group_has_data_links(output_data->nxdata);
         if (!current_is_entry && candidate_has_data && !current_has_data) replace = 1;
@@ -195,7 +196,7 @@ static herr_t det_visit_callback(hid_t root_id, const char* name, const H5O_info
 
     if (H5Gclose(group_id) < 0) retval = -1;
 
- done:
+done:
     return retval;
 }
 
@@ -224,14 +225,13 @@ int get_detector_info(const hid_t fid, struct ds_desc_t** desc) {
             get_object_path(objects.nxdetector, nxdet_path, sizeof(nxdet_path));
 
         fprintf(stderr, "[DURIN] detector_info: NXdata=%s NXdetector=%s\n",
-                nxdata_path[0] ? nxdata_path : "(none)",
-                nxdet_path[0] ? nxdet_path : "(none)");
+                nxdata_path[0] ? nxdata_path : "(none)", nxdet_path[0] ? nxdet_path : "(none)");
     }
 
     if ((retval = create_dataset_descriptor(desc, &objects)) < 0) {
         ERROR_JUMP(retval, done, "");
     }
 
- done:
+done:
     return retval;
 }

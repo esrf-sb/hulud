@@ -25,11 +25,11 @@ extern int durin_debug_enabled;
 
 /* Stores pre-calculated file location for a single frame to allow lock-free reading */
 struct ParallelFrameIndex {
-    int fd;                  // OS File Descriptor
-    long long byte_offset;   // Byte offset
-    size_t chunk_size;       // Compressed size in bytes
-    unsigned int* bs_params; // Pointer to compression params (borrowed from MapEntry) 
-    int has_bs_filter;       // bitshuffle-lz4 decompression 
+    int fd;                   // OS File Descriptor
+    long long byte_offset;    // Byte offset
+    size_t chunk_size;        // Compressed size in bytes
+    unsigned int* bs_params;  // Pointer to compression params (borrowed from MapEntry)
+    int has_bs_filter;        // bitshuffle-lz4 decompression
 };
 
 struct FrameMapEntry {
@@ -50,7 +50,7 @@ struct FrameMapEntry {
     hsize_t cached_chunk_index;
     void* scratch;
     size_t scratch_size;
-    int raw_fd; 
+    int raw_fd;
 };
 
 struct det_visit_objects_t;
@@ -77,7 +77,8 @@ struct pilatus_ds_desc_t {
     struct ds_desc_t base;
     int n_data_blocks;
     int* block_sizes;
-    hsize_t* block_starts; /* 0-based global frame index for each block (uses image_nr_low when available) */
+    hsize_t* block_starts; /* 0-based global frame index for each block (uses image_nr_low when
+                              available) */
     char** block_names;    /* dataset names (e.g. data_000123) kept for non-contiguous numbering */
     int (*frame_func)(const struct ds_desc_t*, const char*, const hsize_t*, const hsize_t*, void*);
 };
@@ -95,7 +96,6 @@ struct opt_pilatus_ds_desc_t {
 
     struct ParallelFrameIndex* fast_index;
 };
-
 
 int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf);
 int build_parallel_index(struct opt_pilatus_ds_desc_t* opt);

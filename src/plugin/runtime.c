@@ -3,8 +3,9 @@
  * Author: Charles Mita
  */
 
-#include <durin/plugin_api.h>
+#include "plugin/runtime.h"
 
+#include <durin/plugin_api.h>
 #include <hdf5.h>
 #include <limits.h>
 #include <pthread.h>
@@ -14,7 +15,6 @@
 #include <string.h>
 
 #include "io/file.h"
-#include "plugin/runtime.h"
 
 #define ERROR_OUTPUT stderr
 
@@ -247,13 +247,14 @@ void durin_plugin_runtime_get_header(int* nx, int* ny, int* nbytes, float* qx, f
         struct pilatus_ds_desc_t* pilatus_desc = (struct pilatus_ds_desc_t*)data_desc;
         if (pilatus_desc->block_sizes && pilatus_desc->n_data_blocks > 0) {
             hsize_t sum = 0;
-            for (int i = 0; i < pilatus_desc->n_data_blocks; ++i) sum += (hsize_t)pilatus_desc->block_sizes[i];
+            for (int i = 0; i < pilatus_desc->n_data_blocks; ++i)
+                sum += (hsize_t)pilatus_desc->block_sizes[i];
             if (sum < INT_MAX) physical_frames = (int)sum;
         }
     }
     if (physical_frames > 0) {
-        info[5] = physical_frames;      /* mapped frames */
-        info[6] = *number_of_frames;    /* logical frames (including gaps) */
+        info[5] = physical_frames;   /* mapped frames */
+        info[6] = *number_of_frames; /* logical frames (including gaps) */
     }
 
 done:
