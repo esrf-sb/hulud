@@ -2,9 +2,13 @@
 
 All notable changes to the Durin VDS project will be documented in this file.
 
-## [1.4.4] - 2026-03-04
+## [1.4.4] - 2026-04-07
 - **Reformating Code:** - Code restructuration and documentation
 - **Build** - Adding pixi env. 
+- **Bug** - Fixed bitshuffle/LZ4 decompression for chunks advertising `block_size=0` by using the bitshuffle default block size.
+- **Bug** - Preserved logical frame numbering from `image_nr_low` / `image_nr_high` in the VDS fast path, so requested frame numbers map to the correct physical images.
+- **Bug** - Hardened nested VDS frame-map expansion for interleaved Lima2-style mappings and removed the unsafe sequential re-packing of sparse mappings.
+- **Test** - Added a regression test covering nested VDS frame selection with `STRIDE (2,1,1)` and non-contiguous logical frame numbering.
 
 ## [1.4.3] -  2026-02-10
 - **Bug:** - Building error on apptainer

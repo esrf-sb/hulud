@@ -225,22 +225,24 @@ static int is_virtual_pilatus_dataset(hid_t data_group_id, int* is_virtual) {
 }
 
 static int create_virtual_pilatus_descriptor(hid_t data_group_id, struct ds_desc_t** output_desc) {
-    struct pilatus_ds_desc_t* pilatus_desc = calloc(1, sizeof(struct pilatus_ds_desc_t));
     struct opt_pilatus_ds_desc_t* opt_desc = calloc(1, sizeof(struct opt_pilatus_ds_desc_t));
-    if (!pilatus_desc || !opt_desc) {
-        free(pilatus_desc);
+    if (!opt_desc) {
         free(opt_desc);
         return -1;
     }
 
-    pilatus_desc->frame_func = &get_frame_simple;
     opt_desc->base.frame_func = &get_frame_from_chunk;
+    opt_desc->base.base.data_g_id = data_group_id;
+
+    if (get_dectris_pilatus_dataset_dims((struct ds_desc_t*)&opt_desc->base) < 0) {
+        free_opt_pilatus_desc((struct ds_desc_t*)opt_desc);
+        return -1;
+    }
 
     char master_dir[MAX_PATH_LEN] = {0};
     resolve_master_directory(data_group_id, master_dir, sizeof(master_dir));
 
-    if (build_vds_mapping(data_group_id, master_dir, opt_desc, pilatus_desc) < 0) {
-        free(pilatus_desc);
+    if (build_vds_mapping(data_group_id, master_dir, opt_desc, NULL) < 0) {
         free_opt_pilatus_desc((struct ds_desc_t*)opt_desc);
         return -1;
     }
