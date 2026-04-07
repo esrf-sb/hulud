@@ -32,7 +32,8 @@ int bslz4_decompress(const unsigned int* bs_params, size_t in_size, void* in_buf
 
     block_size = bshuf_read_uint32_BE((const char*)in_buffer + 8) / elem_size;
     if (!block_size) {
-        ERROR_JUMP(-1, done, "Read block bitshuffle lz4 block size as 0");
+        /* Bitshuffle uses 0 in the header to mean "use the default block size". */
+        block_size = bshuf_default_block_size(elem_size);
     }
     /* skip over header */
     in_buffer += 12;

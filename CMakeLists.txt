@@ -8,6 +8,8 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND (NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUIL
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+enable_testing()
+
 # --- Dependencies ---
 find_package(HDF5 REQUIRED COMPONENTS C HL)
 find_package(Threads REQUIRED)
@@ -63,6 +65,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark.c")
     # The benchmark tool needs to link to the core library and HDF5.
     target_link_libraries(benchmark PRIVATE durin_core ${DURIN_HDF5_LIBS} -ldl)
 endif()
+
+add_executable(test_vds_image_numbers test/test_vds_image_numbers.c)
+target_link_libraries(test_vds_image_numbers PRIVATE durin-plugin ${DURIN_HDF5_LIBS})
+add_test(NAME test_vds_image_numbers COMMAND test_vds_image_numbers)
 
 # --- Installation (Optional but good practice) ---
 install(
