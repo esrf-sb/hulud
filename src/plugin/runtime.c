@@ -108,18 +108,12 @@ static int convert_to_int32_and_mask(const void* in_buffer, int d_width, int dat
             }
             break;
         case 4:
-            if (data_is_signed) {
-                const int32_t* in = in_buffer;
-                for (i = 0; i < length; ++i) out_buffer[i] = in[i];
-            } else {
-                const uint32_t* in = in_buffer;
-                for (i = 0; i < length; ++i) {
-                    if (in[i] > (uint32_t)INT32_MAX) {
-                        ERROR_JUMP(-1, done, "Unsigned 32-bit pixel value exceeds int32_t range");
-                    }
-                    out_buffer[i] = (int32_t)in[i];
-                }
-            }
+            /*
+             * The plugin ABI exposes int32_t pixels. For 32-bit detector data we preserve the
+             * on-wire 32-bit bit pattern, which matches the historical behavior and keeps common
+             * unsigned sentinels such as 0xFFFFFFFF visible as -1 to downstream consumers.
+             */
+            memcpy(out_buffer, in_buffer, (size_t)length * sizeof(*out_buffer));
             break;
         case 8:
             if (data_is_signed) {
@@ -305,7 +299,7 @@ void durin_plugin_runtime_get_data(int* frame_number, int* nx, int* ny, int* dat
     if (need_lock) pthread_mutex_lock(&plugin_mutex);
 
     void* buffer = NULL;
-    if ((int)sizeof(*out_buffer) == data_desc->data_width && data_desc->data_is_signed) {
+    if ((int)sizeof(*out_buffer) == data_desc->data_width) {
         buffer = out_buffer;
     } else {
         size_t needed = (size_t)data_desc->data_width * frame_size_px;
