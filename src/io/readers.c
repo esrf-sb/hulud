@@ -1,6 +1,7 @@
 /* Must be before any includes to enable pread in C99 */
 #define _POSIX_C_SOURCE 200809L
 
+#include <errno.h>
 #include <fcntl.h> /* For open() */
 #include <hdf5.h>
 #include <hdf5_hl.h>
@@ -34,7 +35,9 @@ int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
         /* Open the raw source file directly (OS level) */
         int fd = open(E->src_file, O_RDONLY);
         if (fd < 0) {
-            fprintf(stderr, "[DURIN] Failed to open raw file for parallel read: %s\n", E->src_file);
+            fprintf(stderr,
+                    "[DURIN] Failed to open raw file for parallel read (entry %d): %s (%s)\n", i,
+                    E->src_file, strerror(errno));
             /* Cleanup will happen in free_opt_pilatus_desc */
             retval = -1;
             goto fail;

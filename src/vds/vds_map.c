@@ -82,6 +82,8 @@ static void set_direct_flags(struct FrameMapEntry* E, hid_t sp) {
 static int append_leaf(struct MapBuilder* b, const char* src_full, const char* src_dset_name,
                        hid_t src_f, hid_t src_d, hsize_t v_start, hsize_t v_end, hsize_t s_start,
                        hsize_t s_end, struct opt_pilatus_ds_desc_t* opt, int* data_width_set) {
+    int src_file_ref_acquired = 0;
+    int src_dset_ref_acquired = 0;
     if (v_start >= opt->base.base.dims[0]) return 0;
     hsize_t src_dims[3] = {0};
     hid_t spc = H5Dget_space(src_d);
@@ -100,7 +102,7 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
     if (span == 0) return 0;
 
     if (ensure_capacity(b, 1) < 0) return -1;
-    struct FrameMapEntry* E = &b->entries[b->used++];
+    struct FrameMapEntry* E = &b->entries[b->used];
     memset(E, 0, sizeof(*E));
 
     E->vds_start = v_start;
@@ -109,6 +111,11 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
     E->src_end = s_start + span - 1;
     E->src_file = dupstr(src_full);
     E->src_dset = dupstr(src_dset_name);
+    if (!E->src_file || !E->src_dset) goto fail;
+    if (H5Iinc_ref(src_f) < 0) goto fail;
+    src_file_ref_acquired = 1;
+    if (H5Iinc_ref(src_d) < 0) goto fail;
+    src_dset_ref_acquired = 1;
     E->src_file_id = src_f;
     E->src_dset_id = src_d;
 
@@ -123,7 +130,16 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
         *data_width_set = 1;
     }
 
+    b->used++;
     return 0;
+
+fail:
+    if (src_dset_ref_acquired) H5Idec_ref(src_d);
+    if (src_file_ref_acquired) H5Idec_ref(src_f);
+    free(E->src_file);
+    free(E->src_dset);
+    memset(E, 0, sizeof(*E));
+    return -1;
 }
 
 static void free_index_list(struct IndexList* list) {
@@ -133,27 +149,43 @@ static void free_index_list(struct IndexList* list) {
     list->count = 0;
 }
 
+static void destroy_map_entries(struct FrameMapEntry* entries, size_t count) {
+    if (!entries) return;
+    for (size_t i = 0; i < count; ++i) {
+        struct FrameMapEntry* entry = &entries[i];
+        if (entry->src_dset_id > 0) H5Dclose(entry->src_dset_id);
+        if (entry->src_file_id > 0) H5Fclose(entry->src_file_id);
+        free(entry->src_file);
+        free(entry->src_dset);
+        free(entry->scratch);
+    }
+    free(entries);
+}
+
 static int collect_selected_indices_1d(hid_t space, struct IndexList* out) {
     int retval = 0;
     int rank = H5Sget_simple_extent_ndims(space);
+    hsize_t* dims = NULL;
     hssize_t nblocks = 0;
-    hssize_t npoints = 0;
     hsize_t* blocklist = NULL;
+    hsize_t total_indices = 0;
     size_t used = 0;
 
     memset(out, 0, sizeof(*out));
     if (rank <= 0) ERROR_JUMP(-1, done, "Invalid selection rank");
 
-    npoints = H5Sget_select_npoints(space);
-    if (npoints < 0) ERROR_JUMP(-1, done, "Failed to get selected point count");
-    if (npoints == 0) goto done;
+    dims = calloc((size_t)rank, sizeof(*dims));
+    if (!dims) ERROR_JUMP(-1, done, "Out of memory for dataspace dimensions");
+    if (H5Sget_simple_extent_dims(space, dims, NULL) < 0) {
+        ERROR_JUMP(-1, done, "Failed to read dataspace dimensions");
+    }
 
     nblocks = H5Sget_select_hyper_nblocks(space);
-    if (nblocks <= 0) ERROR_JUMP(-1, done, "Failed to get hyperslab block count");
+    if (nblocks < 0) ERROR_JUMP(-1, done, "Failed to get hyperslab block count");
+    if (nblocks == 0) goto done;
 
     blocklist = calloc((size_t)nblocks * (size_t)rank * 2, sizeof(*blocklist));
-    out->values = calloc((size_t)npoints, sizeof(*out->values));
-    if (!blocklist || !out->values) ERROR_JUMP(-1, done, "Out of memory for VDS index list");
+    if (!blocklist) ERROR_JUMP(-1, done, "Out of memory for VDS hyperslab blocks");
 
     if (H5Sget_select_hyper_blocklist(space, 0, nblocks, blocklist) < 0) {
         ERROR_JUMP(-1, done, "Failed to get hyperslab block list");
@@ -163,17 +195,48 @@ static int collect_selected_indices_1d(hid_t space, struct IndexList* out) {
         size_t base = (size_t)block * (size_t)rank * 2;
         hsize_t start = blocklist[base];
         hsize_t end = blocklist[base + (size_t)rank];
+
+        if (end < start || end >= dims[0]) {
+            ERROR_JUMP(-1, done, "Invalid hyperslab bounds in frame dimension");
+        }
+
+        for (int dim = 1; dim < rank; ++dim) {
+            hsize_t dim_start = blocklist[base + (size_t)dim];
+            hsize_t dim_end = blocklist[base + (size_t)rank + (size_t)dim];
+
+            if (dim_end < dim_start || dim_end >= dims[dim]) {
+                ERROR_JUMP(-1, done, "Invalid hyperslab bounds in non-frame dimension");
+            }
+            if (dim_start != 0 || dim_end + 1 != dims[dim]) {
+                ERROR_JUMP(-1, done, "Unsupported partial-frame VDS hyperslab");
+            }
+        }
+
+        total_indices += (end - start) + 1;
+    }
+
+    if (total_indices == 0) goto done;
+    if (total_indices > (hsize_t)SIZE_MAX) ERROR_JUMP(-1, done, "Too many VDS frame indices");
+
+    out->values = calloc((size_t)total_indices, sizeof(*out->values));
+    if (!out->values) ERROR_JUMP(-1, done, "Out of memory for VDS index list");
+
+    for (hssize_t block = 0; block < nblocks; ++block) {
+        size_t base = (size_t)block * (size_t)rank * 2;
+        hsize_t start = blocklist[base];
+        hsize_t end = blocklist[base + (size_t)rank];
+
         for (hsize_t idx = start; idx <= end; ++idx) {
-            if (used >= (size_t)npoints) ERROR_JUMP(-1, done, "Hyperslab point count mismatch");
             out->values[used++] = idx;
         }
     }
 
-    if (used != (size_t)npoints) ERROR_JUMP(-1, done, "Incomplete hyperslab point expansion");
+    if (used != (size_t)total_indices) ERROR_JUMP(-1, done, "Incomplete hyperslab frame expansion");
     out->count = used;
 
 done:
     if (retval < 0) free_index_list(out);
+    free(dims);
     free(blocklist);
     return retval;
 }
@@ -368,10 +431,8 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
         retval = append_selected_leaf_runs(b, src_full, src_dset_name, src_f, src_d, outer_v_offset,
                                            &v_indices, &s_indices, opt, data_width_set);
         H5Pclose(sp);
-        if (retval < 0) {
-            H5Dclose(src_d);
-            H5Fclose(src_f);
-        }
+        H5Dclose(src_d);
+        H5Fclose(src_f);
     }
 
     free_index_list(&v_indices);
@@ -512,10 +573,10 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_pilatus_ds
             opt->n_map_entries = (int)builder.used;
             if (pilatus_desc_to_free) free(pilatus_desc_to_free);
         } else {
-            free(builder.entries);
+            destroy_map_entries(builder.entries, builder.used);
         }
     } else {
-        free(builder.entries);
+        destroy_map_entries(builder.entries, builder.used);
     }
 
 done:
