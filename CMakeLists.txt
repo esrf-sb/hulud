@@ -13,6 +13,7 @@ enable_testing()
 # --- Dependencies ---
 find_package(HDF5 REQUIRED COMPONENTS C HL)
 find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
 
 set(DURIN_HDF5_LIBS HDF5::HDF5)
 if(TARGET HDF5::HL)
@@ -25,6 +26,12 @@ else()
     message(FATAL_ERROR "HDF5 HL library target not found; required for H5DOread_chunk")
 endif()
 
+# Static HDF5 builds do not always propagate these support libraries via the
+# imported HDF5 targets, so keep them explicit on Durin targets.
+set(DURIN_SUPPORT_LIBS ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
+if(NOT WIN32)
+    list(APPEND DURIN_SUPPORT_LIBS m)
+endif()
 
 include_directories(include)
 include_directories(src)
@@ -48,7 +55,8 @@ add_library(durin_core STATIC
     src/io/readers.c
     src/core/err.c
 )
-target_link_libraries(durin_core PRIVATE ${DURIN_HDF5_LIBS} bslz4_bundled Threads::Threads)
+target_link_libraries(durin_core PUBLIC ${DURIN_HDF5_LIBS} ${DURIN_SUPPORT_LIBS})
+target_link_libraries(durin_core PRIVATE bslz4_bundled)
 
 # --- 3. Durin XDS Plugin (Shared Library) ---
 add_library(durin-plugin SHARED
@@ -57,17 +65,16 @@ add_library(durin-plugin SHARED
 )
 # XDS expects a specific name, e.g. durin-plugin.so
 set_target_properties(durin-plugin PROPERTIES PREFIX "" OUTPUT_NAME "durin-plugin")
-target_link_libraries(durin-plugin PRIVATE durin_core ${DURIN_HDF5_LIBS} Threads::Threads)
+target_link_libraries(durin-plugin PRIVATE durin_core ${DURIN_SUPPORT_LIBS})
 
 # --- 4. Benchmark Tool ---
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark.c")
     add_executable(benchmark tools/benchmark.c)
-    # The benchmark tool needs to link to the core library and HDF5.
-    target_link_libraries(benchmark PRIVATE durin_core ${DURIN_HDF5_LIBS} -ldl)
+    target_link_libraries(benchmark PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 
 add_executable(test_vds_image_numbers test/test_vds_image_numbers.c)
-target_link_libraries(test_vds_image_numbers PRIVATE durin-plugin ${DURIN_HDF5_LIBS})
+target_link_libraries(test_vds_image_numbers PRIVATE durin-plugin)
 add_test(NAME test_vds_image_numbers COMMAND test_vds_image_numbers)
 
 # --- Installation (Optional but good practice) ---
