@@ -9,6 +9,22 @@
 
 #include "compression/bitshuffle_lz4.h"
 #include "core/err.h"
+#include "core/internal.h"
+
+/*
+ * VDS bypass overview
+ *
+ * Durin wants a flat list of frame ranges that map each logical VDS frame to a
+ * concrete source dataset and source frame range. This file turns the HDF5 VDS
+ * metadata into that list so later readers can either:
+ *   - reopen the raw files and read chunks directly, or
+ *   - fall back to ordinary HDF5 reads through the stored dataset handles.
+ *
+ * The important constraint for the fast-path is that mappings must be frame
+ * aligned: we support selecting subsets of the first dimension (frames), but
+ * dimensions 1..N must cover the full image. Nested VDS datasets are flattened
+ * recursively until we reach real leaf datasets.
+ */
 
 struct MapBuilder {
     struct FrameMapEntry* entries;
@@ -112,6 +128,10 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
     E->src_file = dupstr(src_full);
     E->src_dset = dupstr(src_dset_name);
     if (!E->src_file || !E->src_dset) goto fail;
+    /*
+     * flatten_mapping() closes the handles it opened after each recursion step.
+     * Keep our own references so the final frame map stays valid for reading.
+     */
     if (H5Iinc_ref(src_f) < 0) goto fail;
     src_file_ref_acquired = 1;
     if (H5Iinc_ref(src_d) < 0) goto fail;
@@ -125,7 +145,11 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
 
     if (!*data_width_set) {
         hid_t t_id = H5Dget_type(src_d);
-        opt->base.base.data_width = H5Tget_size(t_id);
+        if (get_integer_type_properties(t_id, &opt->base.base.data_width,
+                                        &opt->base.base.data_is_signed) < 0) {
+            H5Tclose(t_id);
+            goto fail;
+        }
         H5Tclose(t_id);
         *data_width_set = 1;
     }
@@ -162,6 +186,14 @@ static void destroy_map_entries(struct FrameMapEntry* entries, size_t count) {
     free(entries);
 }
 
+/*
+ * Expand an HDF5 hyperslab selection into first-dimension indices only.
+ *
+ * HDF5 reports the selection in full rank-N coordinates. For Durin's frame map
+ * we only care about the frame axis, but we require every selected block to span
+ * the full image in the remaining dimensions. That keeps the mapping compatible
+ * with whole-frame chunk reads.
+ */
 static int collect_selected_indices_1d(hid_t space, struct IndexList* out) {
     int retval = 0;
     int rank = H5Sget_simple_extent_ndims(space);
@@ -317,7 +349,13 @@ done:
     return retval;
 }
 
-/* Recursive flatten of a mapping entry */
+/*
+ * Recursively resolve one VDS mapping entry.
+ *
+ * outer_v_offset carries the global frame offset accumulated from parent VDS
+ * layers. For nested VDS datasets we recurse again; for real datasets we append
+ * one or more contiguous runs to the final frame map.
+ */
 static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, hid_t plist,
                            size_t map_idx, hssize_t outer_v_offset,
                            struct opt_pilatus_ds_desc_t* opt, int* data_width_set, int has_clip,
@@ -404,6 +442,11 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
         hssize_t inner_delta = 0;
         H5Pget_virtual_count(sp, &inner);
 
+        /*
+         * Nested VDS support is intentionally conservative: the child selection
+         * must stay contiguous and differ from the parent by a constant frame
+         * offset so we can preserve a simple frame-to-frame translation.
+         */
         if (!indices_are_contiguous(&s_indices) ||
             !mapping_has_constant_translation(&v_indices, &s_indices, &inner_delta)) {
             fprintf(stderr, "[DURIN] Unsupported nested VDS mapping pattern for %s\n", src_dset_name);
@@ -449,6 +492,13 @@ static int compare_frame_map_local(const void* a, const void* b) {
     return (A->vds_start > B->vds_start) - (A->vds_start < B->vds_start);
 }
 
+/*
+ * Build the final flat frame map for a VDS-backed Pilatus dataset.
+ *
+ * The outer loop walks each logical block exposed under NXdata/data_00000N.
+ * Each block may itself be virtual, so flatten_mapping() resolves every VDS leaf
+ * into a sorted list of frame spans stored in opt->frame_map_entries.
+ */
 int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_pilatus_ds_desc_t* opt,
                       struct pilatus_ds_desc_t* pilatus_desc_to_free) {
     int retval = 0;

@@ -97,6 +97,18 @@ char* canonical_file_path(hid_t fid, const char* base_dir) {
     return dup_cstr(raw);
 }
 
+int get_integer_type_properties(hid_t type_id, int* width_out, int* is_signed_out) {
+    H5T_class_t type_class = H5Tget_class(type_id);
+    H5T_sign_t sign = H5Tget_sign(type_id);
+    size_t width = H5Tget_size(type_id);
+
+    if (type_class != H5T_INTEGER || width == 0 || width > (size_t)INT_MAX || sign < 0) return -1;
+
+    if (width_out) *width_out = (int)width;
+    if (is_signed_out) *is_signed_out = (sign != H5T_SGN_NONE);
+    return 0;
+}
+
 double scale_from_units(const char* unit_string) {
     if (!unit_string) return 1.0;
 

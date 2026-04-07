@@ -18,33 +18,7 @@
 
 #define ERROR_OUTPUT stderr
 
-// mask bits loosely based on what Neggia does
-#define COPY_AND_MASK(in, out, size, mask)       \
-    {                                            \
-        int i;                                   \
-        if (mask) {                              \
-            for (i = 0; i < size; ++i) {         \
-                out[i] = in[i];                  \
-                if (mask[i] & 0xFF) out[i] = -1; \
-                if (mask[i] & 30) out[i] = -2;   \
-            }                                    \
-        } else {                                 \
-            for (i = 0; i < size; i++) {         \
-                out[i] = in[i];                  \
-            }                                    \
-        }                                        \
-    }
-
-#define APPLY_MASK(buffer, mask, size)              \
-    {                                               \
-        int i;                                      \
-        if (mask) {                                 \
-            for (i = 0; i < size; ++i) {            \
-                if (mask[i] & 0xFF) buffer[i] = -1; \
-                if (mask[i] & 30) buffer[i] = -2;   \
-            }                                       \
-        }                                           \
-    }
+typedef char durin_requires_32bit_int[(sizeof(int) == sizeof(int32_t)) ? 1 : -1];
 
 static hid_t file_id = 0;
 static struct ds_desc_t* data_desc = NULL;
@@ -101,30 +75,79 @@ static void fill_info_array(int info[DURIN_PLUGIN_INFO_SIZE]) {
     info[4] = VERSION_TIMESTAMP;
 }
 
-static int convert_to_int_and_mask(void* in_buffer, int d_width, int* out_buffer, int length,
-                                   int* mask) {
-    int retval = 0;
-    if (d_width == sizeof(signed char)) {
-        signed char* in = in_buffer;
-        COPY_AND_MASK(in, out_buffer, length, mask);
-    } else if (d_width == sizeof(short)) {
-        short* in = in_buffer;
-        COPY_AND_MASK(in, out_buffer, length, mask);
-    } else if (d_width == sizeof(int)) {
-        int* in = in_buffer;
-        COPY_AND_MASK(in, out_buffer, length, mask);
-    } else if (d_width == sizeof(long int)) {
-        long int* in = in_buffer;
-        COPY_AND_MASK(in, out_buffer, length, mask);
-    } else if (d_width == sizeof(long long int)) {
-        long long int* in = in_buffer;
-        COPY_AND_MASK(in, out_buffer, length, mask);
-    } else {
-        char message[128];
-        sprintf(message, "Unsupported conversion of data width %d to %ld (int)", d_width,
-                sizeof(int));
-        ERROR_JUMP(-1, done, message);
+static void apply_mask_to_int32(int32_t* buffer, const int* mask, int length) {
+    if (!mask) return;
+    for (int i = 0; i < length; ++i) {
+        if (mask[i] & 0xFF) buffer[i] = -1;
+        if (mask[i] & 30) buffer[i] = -2;
     }
+}
+
+static int convert_to_int32_and_mask(const void* in_buffer, int d_width, int data_is_signed,
+                                     int32_t* out_buffer, int length, const int* mask) {
+    int retval = 0;
+    int i = 0;
+
+    switch (d_width) {
+        case 1:
+            if (data_is_signed) {
+                const int8_t* in = in_buffer;
+                for (i = 0; i < length; ++i) out_buffer[i] = (int32_t)in[i];
+            } else {
+                const uint8_t* in = in_buffer;
+                for (i = 0; i < length; ++i) out_buffer[i] = (int32_t)in[i];
+            }
+            break;
+        case 2:
+            if (data_is_signed) {
+                const int16_t* in = in_buffer;
+                for (i = 0; i < length; ++i) out_buffer[i] = (int32_t)in[i];
+            } else {
+                const uint16_t* in = in_buffer;
+                for (i = 0; i < length; ++i) out_buffer[i] = (int32_t)in[i];
+            }
+            break;
+        case 4:
+            if (data_is_signed) {
+                const int32_t* in = in_buffer;
+                for (i = 0; i < length; ++i) out_buffer[i] = in[i];
+            } else {
+                const uint32_t* in = in_buffer;
+                for (i = 0; i < length; ++i) {
+                    if (in[i] > (uint32_t)INT32_MAX) {
+                        ERROR_JUMP(-1, done, "Unsigned 32-bit pixel value exceeds int32_t range");
+                    }
+                    out_buffer[i] = (int32_t)in[i];
+                }
+            }
+            break;
+        case 8:
+            if (data_is_signed) {
+                const int64_t* in = in_buffer;
+                for (i = 0; i < length; ++i) {
+                    if (in[i] < (int64_t)INT32_MIN || in[i] > (int64_t)INT32_MAX) {
+                        ERROR_JUMP(-1, done, "Signed 64-bit pixel value exceeds int32_t range");
+                    }
+                    out_buffer[i] = (int32_t)in[i];
+                }
+            } else {
+                const uint64_t* in = in_buffer;
+                for (i = 0; i < length; ++i) {
+                    if (in[i] > (uint64_t)INT32_MAX) {
+                        ERROR_JUMP(-1, done, "Unsigned 64-bit pixel value exceeds int32_t range");
+                    }
+                    out_buffer[i] = (int32_t)in[i];
+                }
+            }
+            break;
+        default: {
+            char message[128];
+            sprintf(message, "Unsupported conversion of data width %d to int32_t", d_width);
+            ERROR_JUMP(-1, done, message);
+        }
+    }
+
+    apply_mask_to_int32(out_buffer, mask, length);
 done:
     return retval;
 }
@@ -274,6 +297,7 @@ void durin_plugin_runtime_get_data(int* frame_number, int* nx, int* ny, int* dat
     int retval = 0;
     int frame_size_px = data_desc->dims[1] * data_desc->dims[2];
     int need_lock = !data_reader_thread_safe;
+    int32_t* out_buffer = (int32_t*)data_array;
 
     /* * --- MULTI-THREADING CHANGE ---
      * Locks DISABLED to allow parallel execution.
@@ -281,8 +305,8 @@ void durin_plugin_runtime_get_data(int* frame_number, int* nx, int* ny, int* dat
     if (need_lock) pthread_mutex_lock(&plugin_mutex);
 
     void* buffer = NULL;
-    if ((int)sizeof(*data_array) == data_desc->data_width) {
-        buffer = data_array;
+    if ((int)sizeof(*out_buffer) == data_desc->data_width && data_desc->data_is_signed) {
+        buffer = out_buffer;
     } else {
         size_t needed = (size_t)data_desc->data_width * frame_size_px;
         buffer = get_thread_tmp_buffer(needed);
@@ -298,34 +322,18 @@ void durin_plugin_runtime_get_data(int* frame_number, int* nx, int* ny, int* dat
         ERROR_JUMP(-2, done, message);
     }
 
-    if (!apply_mask_and_cast) {
-        if (buffer != data_array) {
-            size_t pixel_bytes = (size_t)data_desc->data_width;
-            size_t copy_bytes =
-                (pixel_bytes < sizeof(*data_array)) ? pixel_bytes : sizeof(*data_array);
-            memset(data_array, 0, (size_t)frame_size_px * sizeof(*data_array));
-            char* dst = (char*)data_array;
-            char* src = (char*)buffer;
-            size_t dst_stride = sizeof(*data_array);
-            for (int i = 0; i < frame_size_px; ++i) {
-                memcpy(dst + ((size_t)i * dst_stride), src + ((size_t)i * pixel_bytes), copy_bytes);
-            }
-        }
-        goto done;
-    }
-
-    /* Masking/Conversion Logic */
-    if (fast_path && buffer == data_array && mask_buffer == NULL) {
+    if (fast_path && buffer == out_buffer && mask_buffer == NULL && apply_mask_and_cast) {
         /* nothing further to do */
-    } else if (buffer != data_array) {
-        if (convert_to_int_and_mask(buffer, data_desc->data_width, data_array, frame_size_px,
-                                    mask_buffer) < 0) {
+    } else if (buffer != out_buffer) {
+        if (convert_to_int32_and_mask(buffer, data_desc->data_width, data_desc->data_is_signed,
+                                      out_buffer, frame_size_px,
+                                      apply_mask_and_cast ? mask_buffer : NULL) < 0) {
             char message[64];
             sprintf(message, "Error converting data for frame %d", *frame_number);
             ERROR_JUMP(-2, done, message);
         }
-    } else {
-        APPLY_MASK(data_array, mask_buffer, frame_size_px);
+    } else if (apply_mask_and_cast) {
+        apply_mask_to_int32(out_buffer, mask_buffer, frame_size_px);
     }
 
 done:

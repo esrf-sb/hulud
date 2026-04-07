@@ -64,6 +64,7 @@ struct det_visit_objects_t {
 struct ds_desc_t {
     hsize_t dims[3];
     int data_width;
+    int data_is_signed;
     hid_t det_g_id;
     hid_t data_g_id;
 

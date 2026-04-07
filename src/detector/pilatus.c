@@ -101,6 +101,7 @@ struct data_block_list {
     hsize_t dim1;
     hsize_t dim2;
     int data_width;
+    int data_is_signed;
     int any_range;
 };
 
@@ -164,9 +165,25 @@ static herr_t collect_data_block_cb(hid_t g_id, const char* name, const H5L_info
     hsize_t dims[3] = {0};
     H5Sget_simple_extent_dims(s_id, dims, NULL);
     hid_t t_id = H5Dget_type(ds_id);
-    size_t width = H5Tget_size(t_id);
+    int width = 0;
+    int data_is_signed = 0;
 
-    if (ctx->data_width == 0) ctx->data_width = (int)width;
+    if (t_id < 0 || get_integer_type_properties(t_id, &width, &data_is_signed) < 0) {
+        if (t_id >= 0) H5Tclose(t_id);
+        H5Sclose(s_id);
+        H5Dclose(ds_id);
+        return -1;
+    }
+
+    if (ctx->data_width == 0) {
+        ctx->data_width = width;
+        ctx->data_is_signed = data_is_signed;
+    } else if (ctx->data_width != width || ctx->data_is_signed != data_is_signed) {
+        H5Tclose(t_id);
+        H5Sclose(s_id);
+        H5Dclose(ds_id);
+        return -1;
+    }
     if (ctx->dim1 == 0) {
         ctx->dim1 = dims[1];
         ctx->dim2 = dims[2];
@@ -251,6 +268,7 @@ int get_dectris_pilatus_dataset_dims(struct ds_desc_t* desc) {
     desc->dims[1] = ctx.dim1;
     desc->dims[2] = ctx.dim2;
     desc->data_width = ctx.data_width;
+    desc->data_is_signed = ctx.data_is_signed;
 
 done:
     free(ctx.blocks);

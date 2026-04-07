@@ -20,6 +20,7 @@ char* dup_cstr(const char* s);
 void get_object_path(hid_t id, char* buf, size_t buflen);
 int link_is_dataset(hid_t loc, const char* name);
 char* canonical_file_path(hid_t fid, const char* base_dir);
+int get_integer_type_properties(hid_t type_id, int* width_out, int* is_signed_out);
 double scale_from_units(const char* unit_string);
 
 /* --- readers.c --- */

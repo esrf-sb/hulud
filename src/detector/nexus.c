@@ -20,9 +20,8 @@ int get_nxs_dataset_dims(struct ds_desc_t* desc) {
         ERROR_JUMP(-1, close_dataset, "Error getting datatype");
     }
 
-    size_t width = H5Tget_size(t_id);
-    if (width <= 0) {
-        ERROR_JUMP(-1, close_type, "Error getting type size");
+    if (get_integer_type_properties(t_id, &desc->data_width, &desc->data_is_signed) < 0) {
+        ERROR_JUMP(-1, close_type, "Unsupported dataset type: expected integer pixels");
     }
 
     s_id = H5Dget_space(ds_id);
@@ -41,7 +40,6 @@ int get_nxs_dataset_dims(struct ds_desc_t* desc) {
         ERROR_JUMP(-1, close_space, "Error getting dataset dimensions");
     }
 
-    desc->data_width = (int)width;
     DEBUGF("nxs_dataset_dims: dims [%llu %llu %llu], width %d\n", (unsigned long long)desc->dims[0],
            (unsigned long long)desc->dims[1], (unsigned long long)desc->dims[2], desc->data_width);
 
