@@ -28,9 +28,12 @@ endif()
 
 # Static HDF5 builds do not always propagate these support libraries via the
 # imported HDF5 targets, so keep them explicit on Durin targets.
-set(DURIN_SUPPORT_LIBS ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
+set(DURIN_HDF5_SUPPORT_LIBS ZLIB::ZLIB)
+if(CMAKE_DL_LIBS)
+    list(APPEND DURIN_HDF5_SUPPORT_LIBS ${CMAKE_DL_LIBS})
+endif()
 if(NOT WIN32)
-    list(APPEND DURIN_SUPPORT_LIBS m)
+    list(APPEND DURIN_HDF5_SUPPORT_LIBS m)
 endif()
 
 include_directories(include)
@@ -55,8 +58,7 @@ add_library(durin_core STATIC
     src/io/readers.c
     src/core/err.c
 )
-target_link_libraries(durin_core PUBLIC ${DURIN_HDF5_LIBS} ${DURIN_SUPPORT_LIBS})
-target_link_libraries(durin_core PRIVATE bslz4_bundled)
+target_link_libraries(durin_core PRIVATE ${DURIN_HDF5_LIBS} bslz4_bundled Threads::Threads)
 
 # --- 3. Durin XDS Plugin (Shared Library) ---
 add_library(durin-plugin SHARED
@@ -65,7 +67,14 @@ add_library(durin-plugin SHARED
 )
 # XDS expects a specific name, e.g. durin-plugin.so
 set_target_properties(durin-plugin PROPERTIES PREFIX "" OUTPUT_NAME "durin-plugin")
-target_link_libraries(durin-plugin PRIVATE durin_core ${DURIN_SUPPORT_LIBS})
+target_link_libraries(
+    durin-plugin
+    PRIVATE
+        durin_core
+        ${DURIN_HDF5_LIBS}
+        ${DURIN_HDF5_SUPPORT_LIBS}
+        Threads::Threads
+)
 
 # --- 4. Benchmark Tool ---
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark.c")
@@ -74,7 +83,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark.c")
 endif()
 
 add_executable(test_vds_image_numbers test/test_vds_image_numbers.c)
-target_link_libraries(test_vds_image_numbers PRIVATE durin-plugin)
+target_link_libraries(
+    test_vds_image_numbers
+    PRIVATE
+        durin-plugin
+        ${DURIN_HDF5_LIBS}
+        ${DURIN_HDF5_SUPPORT_LIBS}
+)
 add_test(NAME test_vds_image_numbers COMMAND test_vds_image_numbers)
 
 # --- Installation (Optional but good practice) ---
