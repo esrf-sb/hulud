@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "configurePresets": [
+    {
+      "name": "dev-release",
+      "displayName": "Dev Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "prod-release",
+      "displayName": "Production-Compatible Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-prod",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DURIN_PRODUCTION_PLUGIN": "ON",
+        "HDF5_DIR": "${sourceDir}/.deps/hdf5-1.14.3/cmake"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev-release",
+      "configurePreset": "dev-release"
+    },
+    {
+      "name": "prod-release",
+      "configurePreset": "prod-release"
+    }
+  ]
+}

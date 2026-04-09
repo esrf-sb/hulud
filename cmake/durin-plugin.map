@@ -1,0 +1,9 @@
+{
+    global:
+        plugin_open;
+        plugin_get_header;
+        plugin_get_data;
+        plugin_close;
+    local:
+        *;
+};

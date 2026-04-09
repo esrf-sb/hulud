@@ -26,5 +26,7 @@ cmake = ">=4.2.3,<5"
 [tasks]
 build = "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"
 test = "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ctest --test-dir build --output-on-failure"
+build-prod = "bash scripts/build-prod.sh"
+test-prod = "bash scripts/build-prod.sh && ctest --test-dir build-prod --output-on-failure"
 clean = "cmake --build build --target clean"
 format = "cmake --build build --target format"

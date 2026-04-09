@@ -4,9 +4,11 @@
 *.tmp
 
 build/
+build-*/
 *.o
 *.mod
 *.so
+.deps/
 # pixi environments
 .pixi/*
 !.pixi/config.toml

@@ -8,17 +8,16 @@ image: ubuntu:24.04
 
 before_script:
   - apt-get update -q
-  - apt-get install -y --no-install-recommends build-essential cmake libhdf5-dev pkg-config zlib1g-dev
+  - apt-get install -y --no-install-recommends build-essential cmake pkg-config zlib1g-dev curl wget file ca-certificates
   - rm -rf /var/lib/apt/lists/*
 
 build:
   stage: build
   script:
-    - cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-    - cmake --build build -j"$(nproc)"
+    - bash scripts/build-prod.sh
   artifacts:
     when: always
     expire_in: 1 week
     paths:
-      - build/durin-plugin.so
-      - build/benchmark
+      - build-prod/durin-plugin.so
+      - build-prod/benchmark

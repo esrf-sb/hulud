@@ -58,7 +58,27 @@ This repository includes a `pixi.toml` workspace:
 ```bash
 pixi run build
 pixi run test
+pixi run build-prod
 pixi run clean
+```
+
+### Production-compatible local build
+
+To reproduce the CVMFS/Apptainer plugin shape locally, use the production build
+path. It downloads and builds the same static HDF5 `1.14.3` used in the
+Apptainer recipe, then configures Durin with `H5_USE_110_API` and the linker
+version script that hides non-plugin symbols:
+
+```bash
+bash scripts/build-prod.sh
+```
+
+You can also use the matching CMake preset after the static HDF5 dependency has
+been bootstrapped:
+
+```bash
+cmake --preset prod-release
+cmake --build --preset prod-release
 ```
 
 ### Build with conda env (optional)
