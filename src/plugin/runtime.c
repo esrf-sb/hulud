@@ -6,6 +6,7 @@
 #include "plugin/runtime.h"
 
 #include <durin/plugin_api.h>
+#include <fenv.h>
 #include <hdf5.h>
 #include <limits.h>
 #include <pthread.h>
@@ -37,6 +38,24 @@ struct thread_tmp_buffer {
 };
 static pthread_once_t tmp_buffer_key_once = PTHREAD_ONCE_INIT;
 static pthread_key_t tmp_buffer_key;
+
+struct fp_env_guard {
+    fenv_t env;
+    int active;
+};
+
+static struct fp_env_guard fp_env_guard_begin(void) {
+    struct fp_env_guard guard;
+    guard.active = (feholdexcept(&guard.env) == 0);
+    return guard;
+}
+
+static void fp_env_guard_end(struct fp_env_guard* guard) {
+    if (guard && guard->active) {
+        fesetenv(&guard->env);
+        guard->active = 0;
+    }
+}
 
 static void destroy_thread_tmp(void* ptr) {
     struct thread_tmp_buffer* state = ptr;
@@ -157,6 +176,7 @@ extern "C" {
  */
 void durin_plugin_runtime_open(const char* filename, int info[DURIN_PLUGIN_INFO_SIZE],
                                int* error_flag) {
+    struct fp_env_guard fp_guard = fp_env_guard_begin();
     int retval = 0;
     *error_flag = 0;
 
@@ -231,6 +251,7 @@ done:
         }
         dump_error_stack(ERROR_OUTPUT);
     }
+    fp_env_guard_end(&fp_guard);
 }
 
 /**
@@ -239,6 +260,7 @@ done:
 void durin_plugin_runtime_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
                                      int* number_of_frames, int info[DURIN_PLUGIN_INFO_SIZE],
                                      int* error_flag) {
+    struct fp_env_guard fp_guard = fp_env_guard_begin();
     int err = 0;
     int retval = 0;
     double x_pixel_size, y_pixel_size;
@@ -280,6 +302,7 @@ done:
     if (retval < 0) {
         dump_error_stack(ERROR_OUTPUT);
     }
+    fp_env_guard_end(&fp_guard);
 }
 
 /**
@@ -288,6 +311,7 @@ done:
  */
 void durin_plugin_runtime_get_data(int* frame_number, int* nx, int* ny, int* data_array,
                                    int info[DURIN_PLUGIN_INFO_SIZE], int* error_flag) {
+    struct fp_env_guard fp_guard = fp_env_guard_begin();
     int retval = 0;
     int frame_size_px = data_desc->dims[1] * data_desc->dims[2];
     int need_lock = !data_reader_thread_safe;
@@ -336,12 +360,14 @@ done:
         dump_error_stack(ERROR_OUTPUT);
     }
     if (need_lock) pthread_mutex_unlock(&plugin_mutex);
+    fp_env_guard_end(&fp_guard);
 }
 
 /**
  * Close all plugin resources and release HDF5 handles.
  */
 void durin_plugin_runtime_close(int* error_flag) {
+    struct fp_env_guard fp_guard = fp_env_guard_begin();
     pthread_mutex_lock(&plugin_mutex);
     data_reader_thread_safe = 0;
     if (file_id) {
@@ -363,6 +389,7 @@ void durin_plugin_runtime_close(int* error_flag) {
     if (H5close() < 0) {
         *error_flag = -1;
     }
+    fp_env_guard_end(&fp_guard);
 }
 
 #ifdef __cplusplus
