@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include <durin/plugin_api.h>
 #include <errno.h>
 #include <hdf5.h>
 #include <stdint.h>
@@ -9,8 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-#include <durin/plugin_api.h>
 
 #define RAW_DATASET_PATH "/entry_0000/ESRF-ID00/pilatus4_4m_lima2/data"
 #define INNER_VDS_PATH RAW_DATASET_PATH
@@ -97,7 +96,8 @@ static int create_scalar_double_dataset(hid_t file_id, const char* path, double 
     space_id = H5Screate(H5S_SCALAR);
     if (space_id < 0) goto done;
 
-    dset_id = H5Dcreate2(file_id, path, H5T_IEEE_F64LE, space_id, lcpl_id, H5P_DEFAULT, H5P_DEFAULT);
+    dset_id =
+        H5Dcreate2(file_id, path, H5T_IEEE_F64LE, space_id, lcpl_id, H5P_DEFAULT, H5P_DEFAULT);
     if (dset_id < 0) goto done;
     if (H5Dwrite(dset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &value) < 0) goto done;
 
@@ -138,8 +138,8 @@ static int create_chunked_u8_dataset(const char* filename, const uint8_t* values
     space_id = H5Screate_simple(3, dims, NULL);
     if (space_id < 0) goto done;
 
-    dset_id =
-        H5Dcreate2(file_id, RAW_DATASET_PATH, H5T_STD_U8LE, space_id, lcpl_id, dcpl_id, H5P_DEFAULT);
+    dset_id = H5Dcreate2(file_id, RAW_DATASET_PATH, H5T_STD_U8LE, space_id, lcpl_id, dcpl_id,
+                         H5P_DEFAULT);
     if (dset_id < 0) goto done;
     if (H5Dwrite(dset_id, H5T_NATIVE_UINT8, H5S_ALL, H5S_ALL, H5P_DEFAULT, values) < 0) goto done;
 
@@ -154,30 +154,29 @@ done:
     return retval;
 }
 
-static int add_vds_mapping(hid_t dcpl_id, const hsize_t* virt_dims, const hsize_t* virt_start,
-                           const hsize_t* virt_stride, const hsize_t* virt_count,
-                           const hsize_t* virt_block, const char* src_file,
-                           const hsize_t* src_dims, const hsize_t* src_start,
-                           const hsize_t* src_stride, const hsize_t* src_count,
-                           const hsize_t* src_block) {
+static int add_vds_all_mapping(hid_t dcpl_id, const hsize_t* virt_dims,
+                               const hsize_t* virtual_frames, size_t frame_count,
+                               const char* src_file) {
     int retval = -1;
     hid_t vspace_id = -1;
     hid_t sspace_id = -1;
+    hsize_t stride[3] = {1, 1, 1};
+    hsize_t count[3] = {1, 1, 1};
+    hsize_t block[3] = {1, 1, 1};
 
     vspace_id = H5Screate_simple(3, virt_dims, NULL);
     if (vspace_id < 0) goto done;
-    if (H5Sselect_hyperslab(vspace_id, H5S_SELECT_SET, virt_start, virt_stride, virt_count,
-                            virt_block) < 0) {
-        goto done;
+    if (H5Sselect_none(vspace_id) < 0) goto done;
+    for (size_t i = 0; i < frame_count; ++i) {
+        hsize_t start[3] = {virtual_frames[i], 0, 0};
+        H5S_seloper_t operation = (i == 0) ? H5S_SELECT_SET : H5S_SELECT_OR;
+        if (H5Sselect_hyperslab(vspace_id, operation, start, stride, count, block) < 0) goto done;
     }
 
-    sspace_id = H5Screate_simple(3, src_dims, NULL);
+    /* Use an unrestricted rank-3 source selection; h5dump reports this as SELECTION ALL. */
+    hsize_t source_dims[3] = {(hsize_t)frame_count, 1, 1};
+    sspace_id = H5Screate_simple(3, source_dims, NULL);
     if (sspace_id < 0) goto done;
-    if (H5Sselect_hyperslab(sspace_id, H5S_SELECT_SET, src_start, src_stride, src_count, src_block) <
-        0) {
-        goto done;
-    }
-
     if (H5Pset_virtual(dcpl_id, vspace_id, src_file, INNER_VDS_PATH, sspace_id) < 0) goto done;
 
     retval = 0;
@@ -195,8 +194,7 @@ static int create_inner_frame_master(const char* filename) {
     hid_t dcpl_id = -1;
     hid_t space_id = -1;
     hid_t dset_id = -1;
-    hsize_t virt_dims[3] = {4, 1, 1};
-    hsize_t raw_dims[3] = {2, 1, 1};
+    hsize_t virt_dims[3] = {6, 1, 1};
 
     file_id = H5Fcreate(filename, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
     if (file_id < 0) goto done;
@@ -214,33 +212,15 @@ static int create_inner_frame_master(const char* filename) {
     if (H5Pset_layout(dcpl_id, H5D_VIRTUAL) < 0) goto done;
 
     {
-        hsize_t virt_start[3] = {1, 0, 0};
-        hsize_t virt_stride[3] = {2, 1, 1};
-        hsize_t virt_count[3] = {2, 1, 1};
-        hsize_t virt_block[3] = {1, 1, 1};
-        hsize_t src_start[3] = {0, 0, 0};
-        hsize_t src_stride[3] = {1, 1, 1};
-        hsize_t src_count[3] = {1, 1, 1};
-        hsize_t src_block[3] = {2, 1, 1};
-        if (add_vds_mapping(dcpl_id, virt_dims, virt_start, virt_stride, virt_count, virt_block,
-                            "frame_0.h5", raw_dims, src_start, src_stride, src_count, src_block) <
-            0) {
+        hsize_t virtual_frames[3] = {0, 2, 5};
+        if (add_vds_all_mapping(dcpl_id, virt_dims, virtual_frames, 3, "frame_0.h5") < 0) {
             goto done;
         }
     }
 
     {
-        hsize_t virt_start[3] = {0, 0, 0};
-        hsize_t virt_stride[3] = {2, 1, 1};
-        hsize_t virt_count[3] = {2, 1, 1};
-        hsize_t virt_block[3] = {1, 1, 1};
-        hsize_t src_start[3] = {0, 0, 0};
-        hsize_t src_stride[3] = {1, 1, 1};
-        hsize_t src_count[3] = {1, 1, 1};
-        hsize_t src_block[3] = {2, 1, 1};
-        if (add_vds_mapping(dcpl_id, virt_dims, virt_start, virt_stride, virt_count, virt_block,
-                            "frame_1.h5", raw_dims, src_start, src_stride, src_count, src_block) <
-            0) {
+        hsize_t virtual_frames[3] = {1, 3, 4};
+        if (add_vds_all_mapping(dcpl_id, virt_dims, virtual_frames, 3, "frame_1.h5") < 0) {
             goto done;
         }
     }
@@ -272,16 +252,16 @@ static int create_outer_block_dataset(hid_t file_id, const char* path, hsize_t s
     hid_t dset_id = -1;
     hid_t vspace_id = -1;
     hid_t sspace_id = -1;
-    hsize_t dims[3] = {2, 1, 1};
-    hsize_t inner_dims[3] = {4, 1, 1};
+    hsize_t dims[3] = {3, 1, 1};
+    hsize_t inner_dims[3] = {6, 1, 1};
     hsize_t virt_start[3] = {0, 0, 0};
     hsize_t virt_stride[3] = {1, 1, 1};
     hsize_t virt_count[3] = {1, 1, 1};
-    hsize_t virt_block[3] = {2, 1, 1};
+    hsize_t virt_block[3] = {3, 1, 1};
     hsize_t src_start[3] = {src_start_frame, 0, 0};
     hsize_t src_stride[3] = {1, 1, 1};
     hsize_t src_count[3] = {1, 1, 1};
-    hsize_t src_block[3] = {2, 1, 1};
+    hsize_t src_block[3] = {3, 1, 1};
 
     lcpl_id = H5Pcreate(H5P_LINK_CREATE);
     if (lcpl_id < 0) goto done;
@@ -300,8 +280,8 @@ static int create_outer_block_dataset(hid_t file_id, const char* path, hsize_t s
 
     sspace_id = H5Screate_simple(3, inner_dims, NULL);
     if (sspace_id < 0) goto done;
-    if (H5Sselect_hyperslab(sspace_id, H5S_SELECT_SET, src_start, src_stride, src_count, src_block) <
-        0) {
+    if (H5Sselect_hyperslab(sspace_id, H5S_SELECT_SET, src_start, src_stride, src_count,
+                            src_block) < 0) {
         goto done;
     }
     if (H5Pset_virtual(dcpl_id, vspace_id, "frame_master.h5", INNER_VDS_PATH, sspace_id) < 0) {
@@ -349,8 +329,8 @@ static int create_outer_master(const char* filename) {
         goto done;
     }
 
-    if (create_outer_block_dataset(file_id, "/entry/data/data_000001", 0, 1, 2) < 0) goto done;
-    if (create_outer_block_dataset(file_id, "/entry/data/data_000002", 2, 10, 11) < 0) goto done;
+    if (create_outer_block_dataset(file_id, "/entry/data/data_000001", 0, 1, 3) < 0) goto done;
+    if (create_outer_block_dataset(file_id, "/entry/data/data_000002", 3, 10, 12) < 0) goto done;
 
     retval = 0;
 
@@ -402,8 +382,8 @@ int main(void) {
     char frame1_path[4096];
     char frame_master_path[4096];
     char master_path[4096];
-    uint8_t frame0_values[2] = {20, 21};
-    uint8_t frame1_values[2] = {10, 11};
+    uint8_t frame0_values[3] = {20, 21, 22};
+    uint8_t frame1_values[3] = {10, 11, 12};
 
     if (!mkdtemp(tmp_dir)) {
         fprintf(stderr, "mkdtemp failed: %s\n", strerror(errno));
@@ -415,8 +395,8 @@ int main(void) {
     snprintf(frame_master_path, sizeof(frame_master_path), "%s/frame_master.h5", tmp_dir);
     snprintf(master_path, sizeof(master_path), "%s/master.h5", tmp_dir);
 
-    if (create_chunked_u8_dataset(frame0_path, frame0_values, 2) < 0) goto done;
-    if (create_chunked_u8_dataset(frame1_path, frame1_values, 2) < 0) goto done;
+    if (create_chunked_u8_dataset(frame0_path, frame0_values, 3) < 0) goto done;
+    if (create_chunked_u8_dataset(frame1_path, frame1_values, 3) < 0) goto done;
     if (create_inner_frame_master(frame_master_path) < 0) goto done;
     if (create_outer_master(master_path) < 0) goto done;
 
@@ -437,23 +417,25 @@ int main(void) {
         fprintf(stderr, "unexpected geometry: nx=%d ny=%d nbytes=%d\n", nx, ny, nbytes);
         goto done;
     }
-    if (nframes != 11) {
+    if (nframes != 12) {
         fprintf(stderr, "unexpected logical frame count: %d\n", nframes);
         goto done;
     }
-    if (info[DURIN_PLUGIN_INFO_PHYSICAL_FRAMES] != 4 ||
-        info[DURIN_PLUGIN_INFO_LOGICAL_FRAMES] != 11) {
+    if (info[DURIN_PLUGIN_INFO_PHYSICAL_FRAMES] != 6 ||
+        info[DURIN_PLUGIN_INFO_LOGICAL_FRAMES] != 12) {
         fprintf(stderr, "unexpected info counts: physical=%d logical=%d\n",
                 info[DURIN_PLUGIN_INFO_PHYSICAL_FRAMES], info[DURIN_PLUGIN_INFO_LOGICAL_FRAMES]);
         goto done;
     }
 
-    if (expect_frame_value(info, nx, ny, 1, 10) < 0) goto done;
-    if (expect_frame_value(info, nx, ny, 2, 20) < 0) goto done;
-    if (expect_frame_value(info, nx, ny, 3, 0) < 0) goto done;
+    if (expect_frame_value(info, nx, ny, 1, 20) < 0) goto done;
+    if (expect_frame_value(info, nx, ny, 2, 10) < 0) goto done;
+    if (expect_frame_value(info, nx, ny, 3, 21) < 0) goto done;
+    if (expect_frame_value(info, nx, ny, 4, 0) < 0) goto done;
     if (expect_frame_value(info, nx, ny, 9, 0) < 0) goto done;
     if (expect_frame_value(info, nx, ny, 10, 11) < 0) goto done;
-    if (expect_frame_value(info, nx, ny, 11, 21) < 0) goto done;
+    if (expect_frame_value(info, nx, ny, 11, 12) < 0) goto done;
+    if (expect_frame_value(info, nx, ny, 12, 22) < 0) goto done;
 
     retval = 0;
 

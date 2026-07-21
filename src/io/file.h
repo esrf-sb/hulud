@@ -35,8 +35,11 @@ struct ParallelFrameIndex {
 struct FrameMapEntry {
     hsize_t vds_start;
     hsize_t vds_end;
+    hsize_t vds_stride;
     hsize_t src_start;
     hsize_t src_end;
+    hsize_t src_stride;
+    hsize_t frame_count;
     char* src_file;
     char* src_dset;
     hid_t src_file_id;
@@ -51,6 +54,7 @@ struct FrameMapEntry {
     void* scratch;
     size_t scratch_size;
     int raw_fd;
+    int owns_raw_fd;
 };
 
 struct det_visit_objects_t;

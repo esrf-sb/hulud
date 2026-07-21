@@ -14,8 +14,8 @@
 /*
  * VDS bypass overview
  *
- * Durin wants a flat list of frame ranges that map each logical VDS frame to a
- * concrete source dataset and source frame range. This file turns the HDF5 VDS
+ * Durin wants a flat list of arithmetic frame runs that map each logical VDS frame to a
+ * concrete source dataset and source frame run. This file turns the HDF5 VDS
  * metadata into that list so later readers can either:
  *   - reopen the raw files and read chunks directly, or
  *   - fall back to ordinary HDF5 reads through the stored dataset handles.
@@ -96,23 +96,28 @@ static void set_direct_flags(struct FrameMapEntry* E, hid_t sp) {
 }
 
 static int append_leaf(struct MapBuilder* b, const char* src_full, const char* src_dset_name,
-                       hid_t src_f, hid_t src_d, hsize_t v_start, hsize_t v_end, hsize_t s_start,
-                       hsize_t s_end, struct opt_pilatus_ds_desc_t* opt, int* data_width_set) {
+                       hid_t src_f, hid_t src_d, hsize_t v_start, hsize_t v_stride, hsize_t s_start,
+                       hsize_t s_stride, hsize_t frame_count, struct opt_pilatus_ds_desc_t* opt,
+                       int* data_width_set) {
     int src_file_ref_acquired = 0;
     int src_dset_ref_acquired = 0;
-    if (v_start >= opt->base.base.dims[0]) return 0;
     hsize_t src_dims[3] = {0};
     hid_t spc = H5Dget_space(src_d);
-    H5Sget_simple_extent_dims(spc, src_dims, NULL);
+    if (spc < 0 || H5Sget_simple_extent_ndims(spc) != 3 ||
+        H5Sget_simple_extent_dims(spc, src_dims, NULL) < 0) {
+        if (spc >= 0) H5Sclose(spc);
+        return -1;
+    }
     H5Sclose(spc);
 
-    hsize_t max_len_v = (v_end >= v_start) ? (v_end - v_start + 1) : 0;
-    hsize_t max_len_s = (s_end >= s_start) ? (s_end - s_start + 1) : 0;
-    hsize_t max_len_src = (src_dims[0] > s_start) ? (src_dims[0] - s_start) : 0;
-    hsize_t max_len_dst =
-        (opt->base.base.dims[0] > v_start) ? (opt->base.base.dims[0] - v_start) : 0;
-    hsize_t span = max_len_v;
-    if (max_len_s < span) span = max_len_s;
+    if (frame_count == 0) return 0;
+    if (v_stride == 0 || s_stride == 0) return -1;
+    if (v_start >= opt->base.base.dims[0] || s_start >= src_dims[0]) return 0;
+    if (src_dims[1] != opt->base.base.dims[1] || src_dims[2] != opt->base.base.dims[2]) return -1;
+
+    hsize_t max_len_src = 1 + (src_dims[0] - 1 - s_start) / s_stride;
+    hsize_t max_len_dst = 1 + (opt->base.base.dims[0] - 1 - v_start) / v_stride;
+    hsize_t span = frame_count;
     if (max_len_src < span) span = max_len_src;
     if (max_len_dst < span) span = max_len_dst;
     if (span == 0) return 0;
@@ -122,9 +127,13 @@ static int append_leaf(struct MapBuilder* b, const char* src_full, const char* s
     memset(E, 0, sizeof(*E));
 
     E->vds_start = v_start;
-    E->vds_end = v_start + span - 1;
+    E->vds_end = v_start + (span - 1) * v_stride;
+    E->vds_stride = v_stride;
     E->src_start = s_start;
-    E->src_end = s_start + span - 1;
+    E->src_end = s_start + (span - 1) * s_stride;
+    E->src_stride = s_stride;
+    E->frame_count = span;
+    E->raw_fd = -1;
     E->src_file = dupstr(src_full);
     E->src_dset = dupstr(src_dset_name);
     if (!E->src_file || !E->src_dset) goto fail;
@@ -204,12 +213,26 @@ static int collect_selected_indices_1d(hid_t space, struct IndexList* out) {
     size_t used = 0;
 
     memset(out, 0, sizeof(*out));
-    if (rank <= 0) ERROR_JUMP(-1, done, "Invalid selection rank");
+    H5S_sel_type selection_type = H5Sget_select_type(space);
+    if (rank != 3) ERROR_JUMP(-1, done, "Invalid selection rank");
+    if (selection_type != H5S_SEL_HYPERSLABS && selection_type != H5S_SEL_ALL) {
+        ERROR_JUMP(-1, done, "Unsupported VDS selection type");
+    }
 
     dims = calloc((size_t)rank, sizeof(*dims));
     if (!dims) ERROR_JUMP(-1, done, "Out of memory for dataspace dimensions");
     if (H5Sget_simple_extent_dims(space, dims, NULL) < 0) {
         ERROR_JUMP(-1, done, "Failed to read dataspace dimensions");
+    }
+
+    if (selection_type == H5S_SEL_ALL) {
+        if (dims[0] > (hsize_t)SIZE_MAX) ERROR_JUMP(-1, done, "Too many VDS frame indices");
+        if (dims[0] == 0) goto done;
+        out->values = calloc((size_t)dims[0], sizeof(*out->values));
+        if (!out->values) ERROR_JUMP(-1, done, "Out of memory for VDS index list");
+        for (hsize_t idx = 0; idx < dims[0]; ++idx) out->values[idx] = idx;
+        out->count = (size_t)dims[0];
+        goto done;
     }
 
     nblocks = H5Sget_select_hyper_nblocks(space);
@@ -273,6 +296,25 @@ done:
     return retval;
 }
 
+/* HDF5 may encode an unrestricted VDS source as H5S_ALL or as a rank-0 ALL selection. */
+static int collect_source_indices_1d(hid_t source_selection, hid_t source_dataset,
+                                     struct IndexList* out) {
+    int use_dataset_extent = (source_selection == H5S_ALL);
+    if (!use_dataset_extent && source_selection >= 0) {
+        int rank = H5Sget_simple_extent_ndims(source_selection);
+        H5S_sel_type selection_type = H5Sget_select_type(source_selection);
+        use_dataset_extent = (rank == 0 && selection_type == H5S_SEL_ALL);
+    }
+
+    if (!use_dataset_extent) return collect_selected_indices_1d(source_selection, out);
+
+    hid_t dataset_space = H5Dget_space(source_dataset);
+    if (dataset_space < 0) return -1;
+    int retval = collect_selected_indices_1d(dataset_space, out);
+    H5Sclose(dataset_space);
+    return retval;
+}
+
 static void filter_selected_pairs_by_virtual_range(struct IndexList* v_indices,
                                                    struct IndexList* s_indices, int has_clip,
                                                    hsize_t clip_start, hsize_t clip_end) {
@@ -325,21 +367,33 @@ static int append_selected_leaf_runs(struct MapBuilder* b, const char* src_full,
 
     for (size_t run_start = 0; run_start < v_indices->count;) {
         size_t run_end = run_start;
-        while ((run_end + 1) < v_indices->count &&
-               v_indices->values[run_end + 1] == (v_indices->values[run_end] + 1) &&
-               s_indices->values[run_end + 1] == (s_indices->values[run_end] + 1)) {
-            ++run_end;
+        hsize_t v_stride = 1;
+        hsize_t s_stride = 1;
+        if ((run_end + 1) < v_indices->count) {
+            hsize_t next_v = v_indices->values[run_end + 1];
+            hsize_t next_s = s_indices->values[run_end + 1];
+            if (next_v > v_indices->values[run_end] && next_s > s_indices->values[run_end]) {
+                v_stride = next_v - v_indices->values[run_end];
+                s_stride = next_s - s_indices->values[run_end];
+                ++run_end;
+                while ((run_end + 1) < v_indices->count &&
+                       v_indices->values[run_end + 1] > v_indices->values[run_end] &&
+                       s_indices->values[run_end + 1] > s_indices->values[run_end] &&
+                       v_indices->values[run_end + 1] - v_indices->values[run_end] == v_stride &&
+                       s_indices->values[run_end + 1] - s_indices->values[run_end] == s_stride) {
+                    ++run_end;
+                }
+            }
         }
 
         hssize_t v_start_s = outer_v_offset + (hssize_t)v_indices->values[run_start];
-        hssize_t v_end_s = outer_v_offset + (hssize_t)v_indices->values[run_end];
-        if (v_start_s < 0 || v_end_s < 0) {
+        if (v_start_s < 0) {
             ERROR_JUMP(-1, done, "Negative virtual offset after VDS expansion");
         }
 
-        retval = append_leaf(b, src_full, src_dset_name, src_f, src_d, (hsize_t)v_start_s,
-                             (hsize_t)v_end_s, s_indices->values[run_start],
-                             s_indices->values[run_end], opt, data_width_set);
+        retval = append_leaf(b, src_full, src_dset_name, src_f, src_d, (hsize_t)v_start_s, v_stride,
+                             s_indices->values[run_start], s_stride,
+                             (hsize_t)(run_end - run_start + 1), opt, data_width_set);
         if (retval < 0) goto done;
 
         run_start = run_end + 1;
@@ -354,88 +408,67 @@ done:
  *
  * outer_v_offset carries the global frame offset accumulated from parent VDS
  * layers. For nested VDS datasets we recurse again; for real datasets we append
- * one or more contiguous runs to the final frame map.
+ * one or more constant-stride runs to the final frame map.
  */
 static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, hid_t plist,
                            size_t map_idx, hssize_t outer_v_offset,
                            struct opt_pilatus_ds_desc_t* opt, int* data_width_set, int has_clip,
                            hsize_t clip_start, hsize_t clip_end) {
-    int retval = 0;
-    ssize_t fl = H5Pget_virtual_filename(plist, map_idx, NULL, 0);
-    char* src_file_rel = calloc(fl + 1, 1);
-    H5Pget_virtual_filename(plist, map_idx, src_file_rel, fl + 1);
-
-    ssize_t dl = H5Pget_virtual_dsetname(plist, map_idx, NULL, 0);
-    char* src_dset_name = calloc(dl + 1, 1);
-    H5Pget_virtual_dsetname(plist, map_idx, src_dset_name, dl + 1);
-
-    hid_t vsp = H5Pget_virtual_vspace(plist, map_idx);
-    hid_t ssp = H5Pget_virtual_srcspace(plist, map_idx);
+    int retval = -1;
+    hid_t vsp = -1;
+    hid_t ssp = -1;
+    hid_t src_f = -1;
+    hid_t src_d = -1;
+    hid_t sp = -1;
+    char* src_file_rel = NULL;
+    char* src_dset_name = NULL;
+    char* src_full = NULL;
     struct IndexList v_indices = {0};
     struct IndexList s_indices = {0};
-    if (collect_selected_indices_1d(vsp, &v_indices) < 0 ||
-        collect_selected_indices_1d(ssp, &s_indices) < 0) {
-        H5Sclose(vsp);
-        H5Sclose(ssp);
-        free_index_list(&v_indices);
-        free_index_list(&s_indices);
-        free(src_file_rel);
-        free(src_dset_name);
-        return -1;
-    }
-    H5Sclose(vsp);
-    H5Sclose(ssp);
 
+    ssize_t fl = H5Pget_virtual_filename(plist, map_idx, NULL, 0);
+    if (fl < 0) goto done;
+    src_file_rel = calloc((size_t)fl + 1, 1);
+    if (!src_file_rel || H5Pget_virtual_filename(plist, map_idx, src_file_rel, (size_t)fl + 1) < 0)
+        goto done;
+
+    ssize_t dl = H5Pget_virtual_dsetname(plist, map_idx, NULL, 0);
+    if (dl < 0) goto done;
+    src_dset_name = calloc((size_t)dl + 1, 1);
+    if (!src_dset_name ||
+        H5Pget_virtual_dsetname(plist, map_idx, src_dset_name, (size_t)dl + 1) < 0)
+        goto done;
+
+    vsp = H5Pget_virtual_vspace(plist, map_idx);
+    ssp = H5Pget_virtual_srcspace(plist, map_idx);
+    if (vsp < 0 || ssp < 0 || collect_selected_indices_1d(vsp, &v_indices) < 0) goto done;
+
+    src_full = resolve_path(current_base_dir, src_file_rel);
+    if (!src_full) goto done;
+
+    src_f = H5Fopen(src_full, H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (src_f < 0) {
+        fprintf(stderr, "[DURIN] Error: Could not open source file: %s\n", src_full);
+        goto done;
+    }
+    src_d = H5Dopen2(src_f, src_dset_name, H5P_DEFAULT);
+    if (src_d < 0) goto done;
+
+    if (collect_source_indices_1d(ssp, src_d, &s_indices) < 0) goto done;
     if (v_indices.count != s_indices.count) {
-        free_index_list(&v_indices);
-        free_index_list(&s_indices);
-        free(src_file_rel);
-        free(src_dset_name);
-        return -1;
+        ERROR_JUMP(-1, done, "Mismatched VDS/source selection sizes");
     }
 
     filter_selected_pairs_by_virtual_range(&v_indices, &s_indices, has_clip, clip_start, clip_end);
     if (v_indices.count == 0) {
-        free_index_list(&v_indices);
-        free_index_list(&s_indices);
-        free(src_file_rel);
-        free(src_dset_name);
-        return 0;
+        retval = 0;
+        goto done;
     }
 
-    char* src_full = resolve_path(current_base_dir, src_file_rel);
-
-    if (!src_full) {
-        free_index_list(&v_indices);
-        free_index_list(&s_indices);
-        free(src_file_rel);
-        free(src_dset_name);
-        return -1;
-    }
-
-    hid_t src_f = H5Fopen(src_full, H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (src_f < 0) {
-        fprintf(stderr, "[DURIN] Error: Could not open source file: %s\n", src_full);
-        free_index_list(&v_indices);
-        free_index_list(&s_indices);
-        free(src_full);
-        free(src_file_rel);
-        free(src_dset_name);
-        return -1;
-    }
-    hid_t src_d = H5Dopen2(src_f, src_dset_name, H5P_DEFAULT);
-    if (src_d < 0) {
-        H5Fclose(src_f);
-        free_index_list(&v_indices);
-        free_index_list(&s_indices);
-        free(src_full);
-        free(src_file_rel);
-        free(src_dset_name);
-        return -1;
-    }
-
-    hid_t sp = H5Dget_create_plist(src_d);
+    sp = H5Dget_create_plist(src_d);
+    if (sp < 0) goto done;
     H5D_layout_t lay = H5Pget_layout(sp);
+    retval = 0;
 
     if (lay == H5D_VIRTUAL) {
         size_t inner = 0;
@@ -449,10 +482,15 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
          */
         if (!indices_are_contiguous(&s_indices) ||
             !mapping_has_constant_translation(&v_indices, &s_indices, &inner_delta)) {
-            fprintf(stderr, "[DURIN] Unsupported nested VDS mapping pattern for %s\n", src_dset_name);
+            fprintf(stderr, "[DURIN] Unsupported nested VDS mapping pattern for %s\n",
+                    src_dset_name);
             retval = -1;
         } else {
             char* new_base_dir = dupstr(src_full);
+            if (!new_base_dir) {
+                retval = -1;
+                goto done;
+            }
             char* dname = dirname(new_base_dir);  // Modifies new_base_dir in place
             hssize_t inner_offset = outer_v_offset + inner_delta;
             hsize_t inner_clip_start = s_indices.values[0];
@@ -467,17 +505,17 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
             }
             free(new_base_dir);
         }
-        H5Pclose(sp);
-        H5Dclose(src_d);
-        H5Fclose(src_f);
     } else {
         retval = append_selected_leaf_runs(b, src_full, src_dset_name, src_f, src_d, outer_v_offset,
                                            &v_indices, &s_indices, opt, data_width_set);
-        H5Pclose(sp);
-        H5Dclose(src_d);
-        H5Fclose(src_f);
     }
 
+done:
+    if (sp >= 0) H5Pclose(sp);
+    if (src_d >= 0) H5Dclose(src_d);
+    if (src_f >= 0) H5Fclose(src_f);
+    if (vsp > 0) H5Sclose(vsp);
+    if (ssp > 0) H5Sclose(ssp);
     free_index_list(&v_indices);
     free_index_list(&s_indices);
     free(src_full);
@@ -612,12 +650,23 @@ int build_vds_mapping(hid_t ds_id, const char* master_dir, struct opt_pilatus_ds
 
     if (retval == 0) {
         qsort(builder.entries, builder.used, sizeof(struct FrameMapEntry), compare_frame_map_local);
-        for (size_t i = 1; i < builder.used; ++i) {
-            if (builder.entries[i].vds_start <= builder.entries[i - 1].vds_end) {
-                retval = -1;
-                break;
+        unsigned char* mapped_frames = calloc((size_t)total_frames, sizeof(*mapped_frames));
+        if (!mapped_frames && total_frames > 0) {
+            retval = -1;
+        } else {
+            for (size_t i = 0; i < builder.used && retval == 0; ++i) {
+                const struct FrameMapEntry* entry = &builder.entries[i];
+                for (hsize_t j = 0; j < entry->frame_count; ++j) {
+                    hsize_t frame = entry->vds_start + j * entry->vds_stride;
+                    if (frame >= total_frames || mapped_frames[frame]) {
+                        retval = -1;
+                        break;
+                    }
+                    mapped_frames[frame] = 1;
+                }
             }
         }
+        free(mapped_frames);
         if (retval == 0) {
             opt->frame_map_entries = builder.entries;
             opt->n_map_entries = (int)builder.used;

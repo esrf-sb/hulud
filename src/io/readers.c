@@ -19,37 +19,49 @@
 int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
     int retval = 0;
     int total_frames = opt->base.base.dims[0];
-    int* entry_fds = calloc((size_t)opt->n_map_entries, sizeof(int));
     opt->fast_index = calloc(total_frames, sizeof(struct ParallelFrameIndex));
-    if (!opt->fast_index || !entry_fds) {
-        free(entry_fds);
+    if (!opt->fast_index) {
         free(opt->fast_index);
         opt->fast_index = NULL;
         return -1;
     }
+    for (int frame = 0; frame < total_frames; ++frame) opt->fast_index[frame].fd = -1;
 
     int i = 0;
     for (i = 0; i < opt->n_map_entries; ++i) {
         struct FrameMapEntry* E = &opt->frame_map_entries[i];
 
-        /* Open the raw source file directly (OS level) */
-        int fd = open(E->src_file, O_RDONLY);
-        if (fd < 0) {
-            fprintf(stderr,
-                    "[DURIN] Failed to open raw file for parallel read (entry %d): %s (%s)\n", i,
-                    E->src_file, strerror(errno));
-            /* Cleanup will happen in free_opt_pilatus_desc */
-            retval = -1;
-            goto fail;
+        /* Reuse one OS descriptor when several mapping runs reference the same file. */
+        E->raw_fd = -1;
+        E->owns_raw_fd = 0;
+        for (int previous = 0; previous < i; ++previous) {
+            struct FrameMapEntry* candidate = &opt->frame_map_entries[previous];
+            if (candidate->raw_fd >= 0 && strcmp(candidate->src_file, E->src_file) == 0) {
+                E->raw_fd = candidate->raw_fd;
+                break;
+            }
         }
-        E->raw_fd = fd;
-        entry_fds[i] = fd;
+        if (E->raw_fd < 0) {
+            E->raw_fd = open(E->src_file, O_RDONLY);
+            if (E->raw_fd < 0) {
+                fprintf(stderr,
+                        "[DURIN] Failed to open raw file for parallel read (entry %d): %s (%s)\n",
+                        i, E->src_file, strerror(errno));
+                retval = -1;
+                goto fail;
+            }
+            E->owns_raw_fd = 1;
+        }
 
-        hsize_t count = (E->vds_end - E->vds_start) + 1;
-
-        for (hsize_t j = 0; j < count; ++j) {
-            int global_frame = E->vds_start + j;
-            hsize_t source_index = E->src_start + j;
+        for (hsize_t j = 0; j < E->frame_count; ++j) {
+            hsize_t global_frame = E->vds_start + j * E->vds_stride;
+            hsize_t source_index = E->src_start + j * E->src_stride;
+            if (global_frame >= (hsize_t)total_frames || opt->fast_index[global_frame].fd >= 0) {
+                fprintf(stderr, "[DURIN] Invalid or duplicate mapping for frame %llu\n",
+                        (unsigned long long)global_frame);
+                retval = -1;
+                goto fail;
+            }
 
             hsize_t chunk_offset[3] = {source_index, 0, 0};
             haddr_t byte_addr;
@@ -59,13 +71,14 @@ int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
             /* Use HDF5 to calculate the file offset */
             if (H5Dget_chunk_info_by_coord(E->src_dset_id, chunk_offset, &filter_mask, &byte_addr,
                                            &size) < 0) {
-                fprintf(stderr, "[DURIN] Failed to get chunk info for frame %d\n", global_frame);
+                fprintf(stderr, "[DURIN] Failed to get chunk info for frame %llu\n",
+                        (unsigned long long)global_frame);
                 retval = -1;
                 goto fail;
             }
 
             /* Store in fast index */
-            opt->fast_index[global_frame].fd = fd;
+            opt->fast_index[global_frame].fd = E->raw_fd;
             opt->fast_index[global_frame].byte_offset = (long long)byte_addr;
             opt->fast_index[global_frame].chunk_size = (size_t)size;
             opt->fast_index[global_frame].bs_params = E->bs_params;
@@ -74,15 +87,16 @@ int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
                 E->has_bs_filter && ((filter_mask & 0x1u) == 0);
         }
     }
-    free(entry_fds);
     return retval;
 
 fail:
-    for (int k = 0; k <= i && k < opt->n_map_entries; ++k) {
-        if (entry_fds[k] > 0) close(entry_fds[k]);
+    for (int k = 0; k < opt->n_map_entries; ++k) {
+        if (opt->frame_map_entries[k].owns_raw_fd && opt->frame_map_entries[k].raw_fd >= 0) {
+            close(opt->frame_map_entries[k].raw_fd);
+        }
         opt->frame_map_entries[k].raw_fd = -1;
+        opt->frame_map_entries[k].owns_raw_fd = 0;
     }
-    free(entry_fds);
     free(opt->fast_index);
     opt->fast_index = NULL;
     return retval;
@@ -97,8 +111,8 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
 
     struct ParallelFrameIndex* idx = &opt->fast_index[f];
 
-    /* Check if index is valid (fd must be > 0) */
-    if (idx->fd <= 0) {
+    /* A negative descriptor marks an unmapped logical frame. */
+    if (idx->fd < 0) {
         /* Gap in mapping: return a zero-filled frame. TO DO: DISCUSS WITH OLOF */
         memset(buf, 0, expected);
         return 0;
@@ -144,9 +158,13 @@ int get_virtual_frame(const struct ds_desc_t* d, const int f, void* buf) {
     for (int i = 0; i < opt->n_map_entries; ++i) {
         struct FrameMapEntry* entry = &opt->frame_map_entries[i];
         if (f < 0 || (hsize_t)f < entry->vds_start || (hsize_t)f > entry->vds_end) continue;
+        hsize_t virtual_delta = (hsize_t)f - entry->vds_start;
+        if (entry->vds_stride == 0 || (virtual_delta % entry->vds_stride) != 0) continue;
+        hsize_t mapping_index = virtual_delta / entry->vds_stride;
+        if (mapping_index >= entry->frame_count) continue;
         found = 1;
 
-        hsize_t li = entry->src_start + ((hsize_t)f - entry->vds_start);
+        hsize_t li = entry->src_start + mapping_index * entry->src_stride;
         hsize_t off[3] = {li, 0, 0}, size[3] = {1, d->dims[1], d->dims[2]};
 
         if (entry->direct_read) {
