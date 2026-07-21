@@ -2,6 +2,11 @@
 
 All notable changes to the Durin VDS project will be documented in this file.
 
+## [1.4.5] - 2026-07-21
+- **Bug** - Added support for compact VDS mappings whose source uses `SELECTION ALL`, including arbitrary, strided, and gapped virtual-to-source frame indices.
+- **Performance** - Preserved constant-stride mapping runs and reused raw source file descriptors while building the direct per-frame index, reducing metadata loading overhead without changing the lock-free `pread` path.
+- **Test** - Added regression coverage for irregular compact mappings such as `{0,2,5}` and `{1,3,4}` backed by unrestricted source selections.
+
 ## [1.4.4] - 2026-04-07
 - **Reformating Code:** - Code restructuration and documentation
 - **Build** - Adding pixi env. 

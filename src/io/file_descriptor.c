@@ -41,7 +41,7 @@ static void release_frame_map_entries(struct opt_pilatus_ds_desc_t* opt_desc, in
         struct FrameMapEntry* entry = &opt_desc->frame_map_entries[i];
         if (entry->src_dset_id > 0) H5Dclose(entry->src_dset_id);
         if (entry->src_file_id > 0) H5Fclose(entry->src_file_id);
-        if (close_raw_fd && entry->raw_fd > 0) close(entry->raw_fd);
+        if (close_raw_fd && entry->owns_raw_fd && entry->raw_fd >= 0) close(entry->raw_fd);
         free(entry->src_file);
         free(entry->src_dset);
         free(entry->scratch);

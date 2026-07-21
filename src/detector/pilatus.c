@@ -380,6 +380,7 @@ int build_direct_chunk_map(hid_t data_group_id, struct pilatus_ds_desc_t* base,
 
         struct FrameMapEntry* entry = &opt->frame_map_entries[block];
         memset(entry, 0, sizeof(*entry));
+        entry->raw_fd = -1;
 
         if (set_direct_read_flags(dset, entry) < 0) {
             H5Dclose(dset);
@@ -403,8 +404,11 @@ int build_direct_chunk_map(hid_t data_group_id, struct pilatus_ds_desc_t* base,
 
         entry->vds_start = start;
         entry->vds_end = start + block_frames - 1;
+        entry->vds_stride = 1;
         entry->src_start = 0;
         entry->src_end = block_frames - 1;
+        entry->src_stride = 1;
+        entry->frame_count = block_frames;
 
         char ds_path[MAX_NAME_LEN] = {0};
         if (H5Iget_name(dset, ds_path, sizeof(ds_path)) < 0) {
