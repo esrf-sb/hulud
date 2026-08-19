@@ -25,8 +25,9 @@ int bslz4_decompress(const unsigned int* bs_params, size_t in_size, void* in_buf
     u_bytes = bshuf_read_uint64_BE(in_buffer);
 
     if (u_bytes != out_size) {
-        char message[64];
-        sprintf(message, "Decompressed chunk is %lu bytes, expected %lu", u_bytes, out_size);
+        char message[128];
+        snprintf(message, sizeof(message), "Decompressed chunk is %zu bytes, expected %zu", u_bytes,
+                 out_size);
         ERROR_JUMP(-1, done, message);
     }
 
