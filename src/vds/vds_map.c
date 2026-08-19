@@ -420,9 +420,11 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
     hid_t src_f = -1;
     hid_t src_d = -1;
     hid_t sp = -1;
+    hid_t real_src_f = -1;
     char* src_file_rel = NULL;
     char* src_dset_name = NULL;
     char* src_full = NULL;
+    char* real_src_full = NULL;
     struct IndexList v_indices = {0};
     struct IndexList s_indices = {0};
 
@@ -453,6 +455,22 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
     }
     src_d = H5Dopen2(src_f, src_dset_name, H5P_DEFAULT);
     if (src_d < 0) goto done;
+
+    /*
+     * src_full is only the VDS-declared source path. If src_dset_name resolves
+     * through an external link, src_d actually lives in a different file. Ask
+     * HDF5 which file it really opened so the raw-fd fast path in readers.c
+     * reads chunk bytes from the correct file instead of the declared one.
+     */
+    real_src_f = H5Iget_file_id(src_d);
+    if (real_src_f < 0) goto done;
+    {
+        char* link_base = dupstr(src_full);
+        const char* link_dir = link_base ? dirname(link_base) : NULL;
+        real_src_full = canonical_file_path(real_src_f, link_dir);
+        free(link_base);
+    }
+    if (!real_src_full) goto done;
 
     if (collect_source_indices_1d(ssp, src_d, &s_indices) < 0) goto done;
     if (v_indices.count != s_indices.count) {
@@ -506,19 +524,22 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
             free(new_base_dir);
         }
     } else {
-        retval = append_selected_leaf_runs(b, src_full, src_dset_name, src_f, src_d, outer_v_offset,
-                                           &v_indices, &s_indices, opt, data_width_set);
+        retval = append_selected_leaf_runs(b, real_src_full, src_dset_name, real_src_f, src_d,
+                                           outer_v_offset, &v_indices, &s_indices, opt,
+                                           data_width_set);
     }
 
 done:
     if (sp >= 0) H5Pclose(sp);
     if (src_d >= 0) H5Dclose(src_d);
     if (src_f >= 0) H5Fclose(src_f);
+    if (real_src_f >= 0) H5Fclose(real_src_f);
     if (vsp > 0) H5Sclose(vsp);
     if (ssp > 0) H5Sclose(ssp);
     free_index_list(&v_indices);
     free_index_list(&s_indices);
     free(src_full);
+    free(real_src_full);
     free(src_file_rel);
     free(src_dset_name);
     return retval;
