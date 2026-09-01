@@ -34,6 +34,25 @@ void* load_symbol(void* handle, const char* name) {
     return sym;
 }
 
+/* FNV-1a 64-bit, seeded with the requested frame index. Any change to the
+ * frame content OR a mismatch between the requested and returned frame
+ * (e.g. frame 1 and 3 swapped) changes the resulting hash. */
+static uint64_t hash_frame(int frame_number, const int* buffer, size_t frame_px) {
+    uint64_t h = 0xcbf29ce484222325ULL; /* FNV offset basis */
+    const uint8_t* seed_bytes = (const uint8_t*)&frame_number;
+    for (size_t i = 0; i < sizeof(frame_number); ++i) {
+        h ^= seed_bytes[i];
+        h *= 0x100000001b3ULL; /* FNV prime */
+    }
+    const uint8_t* p = (const uint8_t*)buffer;
+    size_t len = frame_px * sizeof(int);
+    for (size_t i = 0; i < len; ++i) {
+        h ^= p[i];
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
 struct worker_ctx {
     int nx, ny, nbytes;
     int total_frames;
@@ -94,7 +113,7 @@ static void* worker_run(void* arg) {
             // fprintf(stderr, "[Thread] Warning: Frame %d is empty (sum=0)\n", fn);
         }
 
-        ctx->checksum += frame_sum;
+        ctx->checksum ^= hash_frame(fn, buffer, frame_px);
     }
 
     free(buffer);
@@ -232,7 +251,7 @@ int main(int argc, char** argv) {
                 empty_count++;
                 fprintf(stderr, "  WARNING: Frame %d is empty (sum=0)\n", fn);
             }
-            checksum += frame_sum;
+            checksum ^= hash_frame(fn, buffer, frame_px);
         }
 
         double t_end = get_time();
@@ -243,7 +262,7 @@ int main(int argc, char** argv) {
         printf("  Time:         %.4f s\n", dt);
         printf("  Speed:        %.2f FPS\n", fps);
         printf("  Throughput:   %.2f MB/s\n", mbps);
-        printf("  Checksum:     0x%016lx\n", checksum);
+        printf("  Hash:         0x%016lx\n", checksum);
         printf("  Empty Frames: %d\n", empty_count);
         free(buffer);
     }
@@ -279,7 +298,7 @@ int main(int argc, char** argv) {
 
         for (int i = 0; i < threads; ++i) {
             pthread_join(tids[i], NULL);
-            checksum_total += wctx[i].checksum;
+            checksum_total ^= wctx[i].checksum;
             empty_frames_total += wctx[i].empty_frames;
             if (wctx[i].err < 0) err = wctx[i].err;
         }
@@ -292,7 +311,7 @@ int main(int argc, char** argv) {
         printf("  Time:         %.4f s\n", dt);
         printf("  Speed:        %.2f FPS\n", fps);
         printf("  Throughput:   %.2f MB/s\n", mbps);
-        printf("  Checksum:     0x%016lx\n", checksum_total);
+        printf("  Hash:         0x%016lx\n", checksum_total);
         printf("  Empty Frames: %d\n", empty_frames_total);
 
         if (empty_frames_total > 0) {
