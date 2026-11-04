@@ -2,10 +2,12 @@
 
 All notable changes to the Durin VDS project will be documented in this file.
 
-## [1.4.6] - 2026-09-01
+## [Unreleased]
+- **Tool** - Strengthened `benchmark`'s per-frame verification from a plain additive sum to an FNV-1a 64-bit hash seeded with the requested frame index, so a swapped/mismatched frame changes the result instead of being masked by commutative addition.
+
+## [1.4.6] - 2026-08-19
 - **Bug** - Fixed VDS resolution for sources reached through an external HDF5 link: the raw-fd fast path now reads chunk bytes from the file HDF5 actually opened instead of the VDS-declared source path.
 - **Bug** - Fixed a buffer overflow risk in the bitshuffle/LZ4 decompression error message by switching to `snprintf` with a correctly sized buffer.
-- **Tool** - Strengthened `benchmark`'s per-frame verification from a plain additive sum to an FNV-1a 64-bit hash seeded with the requested frame index, so a swapped/mismatched frame changes the result instead of being masked by commutative addition.
 
 ## [1.4.5] - 2026-07-21
 - **Bug** - Added support for compact VDS mappings whose source uses `SELECTION ALL`, including arbitrary, strided, and gapped virtual-to-source frame indices.
