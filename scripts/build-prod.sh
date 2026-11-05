@@ -19,4 +19,6 @@ CMAKE_BIN="${CMAKE_BIN:-cmake}"
 
 "${CMAKE_BIN}" --build "${BUILD_DIR}" -j"${JOBS}"
 
+bash "${ROOT_DIR}/scripts/check-portable.sh" "${BUILD_DIR}/hulud-plugin.so"
+
 echo "Production-compatible plugin available at ${BUILD_DIR}/hulud-plugin.so"
