@@ -1,7 +1,7 @@
 [workspace]
 name = "hulud"
-version = "1.4.6"
-authors = ["Ludovic Broche <ludovic.broche@esrf.fr>"]
+version = "2.0.0"
+authors = ["DAU DEV <dau-pydev@esrf.fr>"]
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
