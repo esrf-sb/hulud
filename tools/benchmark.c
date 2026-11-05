@@ -10,7 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <durin/plugin_api.h>
+#include <hulud/plugin_api.h>
 
 /* --- 2. Global Symbol Pointers --- */
 static plugin_open_fn ptr_plugin_open = NULL;
@@ -123,7 +123,7 @@ static void* worker_run(void* arg) {
 /* --- 5. Main --- */
 int main(int argc, char** argv) {
     char* h5_filename = NULL;
-    char* lib_filename = "./build/durin-plugin.so"; /* Default */
+    char* lib_filename = "./build/hulud-plugin.so"; /* Default */
     int limit_frames = -1;
     int threads = 16;
     int disable_masking = 0;
@@ -147,12 +147,12 @@ int main(int argc, char** argv) {
             debug_mode = 0;
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: %s <master_file.h5> [options]\n", argv[0]);
-            printf("  -l, --lib <path>   Path to .so plugin (default: ./durin-plugin.so)\n");
+            printf("  -l, --lib <path>   Path to .so plugin (default: ./hulud-plugin.so)\n");
             printf("  -n, --frames <N>   Limit number of frames to read\n");
             printf("  -t, --threads <N>  Threads for parallel test\n");
             printf("      --no-mask      Disable masking/casting (fast path)\n");
-            printf("      --debug        Enable DURIN_DEBUG for verbose plugin logs\n");
-            printf("      --no-debug     Disable DURIN_DEBUG\n");
+            printf("      --debug        Enable HULUD_DEBUG for verbose plugin logs\n");
+            printf("      --no-debug     Disable HULUD_DEBUG\n");
             return 0;
         } else if (!h5_filename) {
             h5_filename = argv[i];
@@ -168,12 +168,12 @@ int main(int argc, char** argv) {
     }
 
     if (disable_masking) {
-        setenv("DURIN_DISABLE_MASKING", "1", 1);
+        setenv("HULUD_DISABLE_MASKING", "1", 1);
     }
     if (debug_mode == 1) {
-        setenv("DURIN_DEBUG", "1", 1);
+        setenv("HULUD_DEBUG", "1", 1);
     } else if (debug_mode == 0) {
-        setenv("DURIN_DEBUG", "0", 1);
+        setenv("HULUD_DEBUG", "0", 1);
     }
 
     /* --- Load Library --- */
@@ -190,7 +190,7 @@ int main(int argc, char** argv) {
     ptr_plugin_get_data = (plugin_get_data_fn)load_symbol(handle, "plugin_get_data");
     ptr_plugin_close = (plugin_close_fn)load_symbol(handle, "plugin_close");
 
-    int info[DURIN_PLUGIN_INFO_SIZE] = {0};
+    int info[HULUD_PLUGIN_INFO_SIZE] = {0};
     int err = 0;
 
     /* --- Open File --- */

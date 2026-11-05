@@ -17,7 +17,7 @@
       "binaryDir": "${sourceDir}/build-prod",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "DURIN_PRODUCTION_PLUGIN": "ON",
+        "HULUD_PRODUCTION_PLUGIN": "ON",
         "HDF5_DIR": "${sourceDir}/.deps/hdf5-1.14.3/cmake"
       }
     }

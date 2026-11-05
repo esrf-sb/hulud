@@ -45,7 +45,7 @@ int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
             E->raw_fd = open(E->src_file, O_RDONLY);
             if (E->raw_fd < 0) {
                 fprintf(stderr,
-                        "[DURIN] Failed to open raw file for parallel read (entry %d): %s (%s)\n",
+                        "[HULUD] Failed to open raw file for parallel read (entry %d): %s (%s)\n",
                         i, E->src_file, strerror(errno));
                 retval = -1;
                 goto fail;
@@ -57,7 +57,7 @@ int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
             hsize_t global_frame = E->vds_start + j * E->vds_stride;
             hsize_t source_index = E->src_start + j * E->src_stride;
             if (global_frame >= (hsize_t)total_frames || opt->fast_index[global_frame].fd >= 0) {
-                fprintf(stderr, "[DURIN] Invalid or duplicate mapping for frame %llu\n",
+                fprintf(stderr, "[HULUD] Invalid or duplicate mapping for frame %llu\n",
                         (unsigned long long)global_frame);
                 retval = -1;
                 goto fail;
@@ -71,7 +71,7 @@ int build_parallel_index(struct opt_pilatus_ds_desc_t* opt) {
             /* Use HDF5 to calculate the file offset */
             if (H5Dget_chunk_info_by_coord(E->src_dset_id, chunk_offset, &filter_mask, &byte_addr,
                                            &size) < 0) {
-                fprintf(stderr, "[DURIN] Failed to get chunk info for frame %llu\n",
+                fprintf(stderr, "[HULUD] Failed to get chunk info for frame %llu\n",
                         (unsigned long long)global_frame);
                 retval = -1;
                 goto fail;
@@ -138,7 +138,7 @@ int get_virtual_frame_parallel(const struct ds_desc_t* d, const int f, void* buf
             memcpy(buf, local_scratch, expected);
             retval = 0;
         } else {
-            fprintf(stderr, "[DURIN] Unsupported compression pipeline for frame %d\n", f);
+            fprintf(stderr, "[HULUD] Unsupported compression pipeline for frame %d\n", f);
             retval = -1;
         }
     }

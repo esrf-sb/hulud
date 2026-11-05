@@ -3,8 +3,8 @@
  * Author: Charles Mita
  */
 
-#ifndef DURIN_BITSHUFFLE_LZ4_H
-#define DURIN_BITSHUFFLE_LZ4_H
+#ifndef HULUD_BITSHUFFLE_LZ4_H
+#define HULUD_BITSHUFFLE_LZ4_H
 
 #include <stddef.h>
 
@@ -15,4 +15,4 @@
 int bslz4_decompress(const unsigned int* bs_params, size_t in_size, void* in_buffer,
                      size_t out_size, void* out_buffer);
 
-#endif /* DURIN_BITSHUFFLE_LZ4_H */
+#endif /* HULUD_BITSHUFFLE_LZ4_H */

@@ -21,7 +21,7 @@ struct ds_desc_t;
 struct pilatus_ds_desc_t;
 struct opt_pilatus_ds_desc_t;
 
-extern int durin_debug_enabled;
+extern int hulud_debug_enabled;
 
 /* Stores pre-calculated file location for a single frame to allow lock-free reading */
 struct ParallelFrameIndex {

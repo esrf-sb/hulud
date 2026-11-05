@@ -2,7 +2,7 @@
 #define _GNU_SOURCE
 #endif
 
-#include <durin/plugin_api.h>
+#include <hulud/plugin_api.h>
 #include <errno.h>
 #include <hdf5.h>
 #include <stdint.h>
@@ -374,10 +374,10 @@ int main(void) {
     int retval = 1;
     int err = 0;
     int opened = 0;
-    int info[DURIN_PLUGIN_INFO_SIZE] = {0};
+    int info[HULUD_PLUGIN_INFO_SIZE] = {0};
     int nx = 0, ny = 0, nbytes = 0, nframes = 0;
     float qx = 0.0f, qy = 0.0f;
-    char tmp_dir[] = "/tmp/durin-vds-map-XXXXXX";
+    char tmp_dir[] = "/tmp/hulud-vds-map-XXXXXX";
     char frame0_path[4096];
     char frame1_path[4096];
     char frame_master_path[4096];
@@ -421,10 +421,10 @@ int main(void) {
         fprintf(stderr, "unexpected logical frame count: %d\n", nframes);
         goto done;
     }
-    if (info[DURIN_PLUGIN_INFO_PHYSICAL_FRAMES] != 6 ||
-        info[DURIN_PLUGIN_INFO_LOGICAL_FRAMES] != 12) {
+    if (info[HULUD_PLUGIN_INFO_PHYSICAL_FRAMES] != 6 ||
+        info[HULUD_PLUGIN_INFO_LOGICAL_FRAMES] != 12) {
         fprintf(stderr, "unexpected info counts: physical=%d logical=%d\n",
-                info[DURIN_PLUGIN_INFO_PHYSICAL_FRAMES], info[DURIN_PLUGIN_INFO_LOGICAL_FRAMES]);
+                info[HULUD_PLUGIN_INFO_PHYSICAL_FRAMES], info[HULUD_PLUGIN_INFO_LOGICAL_FRAMES]);
         goto done;
     }
 
