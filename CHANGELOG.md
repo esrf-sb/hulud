@@ -27,7 +27,7 @@ All notable changes to the Hulud project (formerly Durin VDS) will be documented
 - **Test** - Added a regression test covering nested VDS frame selection with `STRIDE (2,1,1)` and non-contiguous logical frame numbering.
 
 ## [1.4.3] -  2026-02-10
-- **Bug:** - Building error on apptainer
+- **Bug:** - Build error in container image
 
 ## [1.4.2] -  2026-01-19
 ### Known Issues

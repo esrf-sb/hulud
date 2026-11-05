@@ -6,7 +6,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(
     HULUD_PRODUCTION_PLUGIN
-    "Build the plugin with the production-compatible ABI settings used for CVMFS deployment"
+    "Build the portable release plugin (static HDF5, hidden symbols, no RPATH)"
     OFF
 )
 set(
