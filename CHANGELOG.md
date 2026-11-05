@@ -2,6 +2,9 @@
 
 All notable changes to the Hulud project (formerly Durin VDS) will be documented in this file.
 
+## [2.0.1] - 2026-11-05
+- **CI** - Migrated builds and releases from GitLab CI to GitHub Actions. 
+
 ## [2.0.0]  - 2026-11-05
 - **Build** - Production plugin is now portable: HDF5 built without szip (no `libsz.so.2` dependency), build-machine RPATH removed, toolchain pinned to glibc 2.28. New `scripts/check-portable.sh` enforces this at the end of `build-prod.sh`.
 - **CI** - GitLab CI builds and tests with pixi; pushing a `vX.Y.Z` tag publishes `hulud-vX.Y.Z-linux-x86_64.tar.gz` (plugin, `LICENSE`, `THIRD_PARTY_NOTICES`) to the package registry and creates a GitLab Release from the CHANGELOG section.

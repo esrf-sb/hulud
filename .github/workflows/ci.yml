@@ -1,0 +1,105 @@
+# Releasing:
+#   1. Add a "## [X.Y.Z] - YYYY-MM-DD" section to CHANGELOG.md.
+#   2. Push a tag vX.Y.Z that includes this workflow.
+# The tag workflow builds and checks the plugin, then creates a GitHub Release
+# with the matching changelog section and the plugin archive attached.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: ghcr.io/prefix-dev/pixi:0.75.0
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      release_tag: ${{ steps.release-tag.outputs.tag }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Only tags matching the original GitLab release rules publish a release.
+      - name: Identify release tag
+        id: release-tag
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache pixi environment and static HDF5
+        uses: actions/cache@v6
+        with:
+          path: |
+            .pixi/
+            .deps/
+          key: linux-x86_64-pixi-0.75.0-${{ hashFiles('pixi.lock', 'scripts/build-static-hdf5.sh') }}
+
+      - name: Build, check portability and run tests
+        run: pixi run --locked test-prod
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hulud-linux-x86_64
+          retention-days: 7
+          path: |
+            build-prod/hulud-plugin.so
+            build-prod/benchmark
+
+  release:
+    needs: build
+    if: needs.build.outputs.release_tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+      RELEASE_NAME: hulud-${{ needs.build.outputs.release_tag }}-linux-x86_64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: hulud-linux-x86_64
+          path: build-prod/
+
+      - name: Prepare release notes
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          awk -v v="$VERSION" '/^## \[/ { p = index($0, "## [" v "]") == 1; next } p' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "CHANGELOG.md has no section '## [$VERSION]'" >&2
+            exit 1
+          fi
+
+      - name: Package plugin and licenses
+        run: |
+          mkdir "$RELEASE_NAME"
+          cp build-prod/hulud-plugin.so LICENSE THIRD_PARTY_NOTICES "$RELEASE_NAME/"
+          tar -czf "$RELEASE_NAME.tar.gz" "$RELEASE_NAME"
+          cp "$RELEASE_NAME.tar.gz" hulud-linux-x86_64.tar.gz
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$RELEASE_TAG" "$RELEASE_NAME.tar.gz" hulud-linux-x86_64.tar.gz \
+            --verify-tag \
+            --title "Hulud $RELEASE_TAG" \
+            --notes-file release_notes.md

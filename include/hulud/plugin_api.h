@@ -45,9 +45,9 @@ enum {
 };
 
 #define DLS_CUSTOMER_ID 0x01 /* pretend we're Dectris, otherwise XDS doesn't work */
-#define VERSION_MAJOR 0
+#define VERSION_MAJOR 2
 #define VERSION_MINOR 0
-#define VERSION_PATCH 0
+#define VERSION_PATCH 1
 #define VERSION_TIMESTAMP -1 /* good enough for Dectris apparantely */
 
 /** Function pointer signature for `plugin_open` (typically used with `dlsym`). */

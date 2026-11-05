@@ -1,6 +1,8 @@
 Hulud
 =====
 
+**[Download the latest Linux x86-64 plugin](https://github.com/esrf-sb/hulud/releases/latest/download/hulud-linux-x86_64.tar.gz)**
+
 Hulud is an XDS plugin for reading detector data from HDF5 files
 (NeXus and Dectris/Pilatus layouts).
 
