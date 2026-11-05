@@ -4,7 +4,8 @@ All notable changes to the Hulud project (formerly Durin VDS) will be documented
 
 ## [Unreleased]
 - **Build** - Production plugin is now portable: HDF5 built without szip (no `libsz.so.2` dependency), build-machine RPATH removed, toolchain pinned to glibc 2.28. New `scripts/check-portable.sh` enforces this at the end of `build-prod.sh`.
-- **CI** - GitLab CI builds and tests with pixi; pushing a `vX.Y.Z` tag publishes the plugin to the package registry and creates a GitLab Release from the CHANGELOG section.
+- **CI** - GitLab CI builds and tests with pixi; pushing a `vX.Y.Z` tag publishes `hulud-vX.Y.Z-linux-x86_64.tar.gz` (plugin, `LICENSE`, `THIRD_PARTY_NOTICES`) to the package registry and creates a GitLab Release from the CHANGELOG section.
+- **Legal** - Added `THIRD_PARTY_NOTICES` with the HDF5 (incl. LBNL portions), Bitshuffle and LZ4 licenses, required for binary redistribution of the statically linked plugin.
 - **Breaking** - Project renamed from Durin to Hulud. The plugin is now `hulud-plugin.so` (update `LIB=` in `XDS.INP`), the public header moved to `include/hulud/plugin_api.h`, and the environment variables are now `HULUD_DEBUG`, `HULUD_DISABLE_MASKING` and `HULUD_PLUGIN_FASTPATH`.
 - **Tool** - Strengthened `benchmark`'s per-frame verification from a plain additive sum to an FNV-1a 64-bit hash seeded with the requested frame index, so a swapped/mismatched frame changes the result instead of being masked by commutative addition.
 
