@@ -1,11 +1,19 @@
+# Releasing:
+#   1. Add a "## [X.Y.Z] - YYYY-MM-DD" section to CHANGELOG.md.
+#   2. Push a tag vX.Y.Z.
+# The tag pipeline builds and checks the plugin, uploads it to the package
+# registry and creates a Release whose description is that CHANGELOG section.
+
 stages:
   - build
   - upload
   - release
 
 variables:
-  # Generic package registry location of the released plugin (tag pipelines only).
-  PACKAGE_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/hulud/${CI_COMMIT_TAG}/hulud-plugin-${CI_COMMIT_TAG}-linux-x86_64.so"
+  # Release archive (tag pipelines only): plugin + LICENSE + THIRD_PARTY_NOTICES,
+  # as required by the BSD/MIT licenses for binary redistribution.
+  RELEASE_NAME: "hulud-${CI_COMMIT_TAG}-linux-x86_64"
+  PACKAGE_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/hulud/${CI_COMMIT_TAG}/${RELEASE_NAME}.tar.gz"
 
 # Release pipelines run on tags like v2.0.0.
 .release-rules:
@@ -43,7 +51,10 @@ upload:
     entrypoint: [""]
   needs: [build]
   script:
-    - 'curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file build-prod/hulud-plugin.so "${PACKAGE_URL}"'
+    - mkdir "${RELEASE_NAME}"
+    - cp build-prod/hulud-plugin.so LICENSE THIRD_PARTY_NOTICES "${RELEASE_NAME}/"
+    - tar -czf "${RELEASE_NAME}.tar.gz" "${RELEASE_NAME}"
+    - 'curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "${RELEASE_NAME}.tar.gz" "${PACKAGE_URL}"'
 
 # Creates the GitLab Release; its description is the matching CHANGELOG.md section.
 release:
@@ -61,6 +72,6 @@ release:
     description: release_notes.md
     assets:
       links:
-        - name: "hulud-plugin-${CI_COMMIT_TAG}-linux-x86_64.so"
+        - name: "${RELEASE_NAME}.tar.gz"
           url: $PACKAGE_URL
           link_type: package

@@ -1,7 +1,7 @@
 Hulud
 =====
 
-Hulud is an XDS-compatible plugin for reading detector data from HDF5 files
+Hulud is an XDS plugin for reading detector data from HDF5 files
 (NeXus and Dectris/Pilatus layouts).
 
 ## Why Hulud
@@ -18,156 +18,74 @@ such as those written by Lima2:
 - **Safe fallback**: when the fast path does not apply, Hulud falls back to
   standard (serialized) HDF5 reads.
 
-See:
-- https://www.nexusformat.org
-- https://www.dectris.com/products/pilatus3
-- https://strucbio.biologie.uni-konstanz.de/xdswiki
-
 ## Origin
 
 Hulud is derived from [durin](https://github.com/DiamondLightSource/durin)
 by Diamond Light Source, and has since been extensively reworked at the ESRF.
 The original copyright notice is kept in `LICENSE` (BSD 3-Clause).
-
-## What Hulud Builds
-
-After a build, the main outputs are:
-- `build/hulud-plugin.so` (the shared library loaded by XDS)
-- `build/benchmark` (optional benchmark/validation tool)
-- `build/libhulud_core.a` and `build/libbslz4_bundled.a` (internal static libs,
-  already linked into the plugin)
-
-Only `hulud-plugin.so` is needed to use Hulud with XDS.
+Licenses of the bundled HDF5, Bitshuffle and LZ4 code are in
+`THIRD_PARTY_NOTICES`.
 
 ## Prebuilt Plugin
 
-Each tagged version publishes `hulud-plugin-vX.Y.Z-linux-x86_64.so` on the
-project's GitLab Releases page. It is a standalone file (HDF5 is built in) that
-runs on any x86-64 Linux with:
+Each release provides `hulud-vX.Y.Z-linux-x86_64.tar.gz`, containing
+`hulud-plugin.so`, `LICENSE` and `THIRD_PARTY_NOTICES`. The plugin is a
+standalone file (HDF5 is built in) that runs on any x86-64 Linux with:
 - glibc >= 2.28 (RHEL/Rocky/Alma 8+, Ubuntu 20.04+, Debian 10+)
-- `libz.so.1` (zlib, present on virtually every system)
+- `libz.so.1` (zlib)
 
-## Requirements
-
-- C compiler (C99)
-- CMake >= 3.15
-- HDF5 with `C` and `HL` components
-- pthreads and `dl` (on Linux/glibc this is typically available by default)
-
-### Notes for manual HDF5 builds
-
-If you build HDF5 yourself, use a configuration compatible with threaded use
-and `H5DOread_chunk`, for example:
-
-```bash
-../configure \
-  --enable-threadsafe \
-  --enable-deprecated-symbols \
-  --enable-hl \
-  --enable-unsupported
-```
+`hulud-plugin.so` is all XDS needs. If you redistribute it, include `LICENSE`
+and `THIRD_PARTY_NOTICES` with it.
 
 ## Build
 
-### Standard CMake build
+### Portable plugin (recommended)
+
+```bash
+pixi run build-prod
+```
+
+Produces `build-prod/hulud-plugin.so`, the same portable build as the
+releases: static HDF5 `1.14.3`, glibc 2.28 baseline, and only the four
+`plugin_*` functions exported. `scripts/check-portable.sh` runs at the end and
+fails the build if the plugin is not portable.
+
+### Development build
+
+Requires a C99 compiler, CMake >= 3.15 and HDF5 with the `C` and `HL`
+components, built thread-safe:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-### Install (optional)
+Or with pixi: `pixi run build`, `pixi run test`.
 
-```bash
-cmake --install build --prefix /opt/hulud
-```
-
-### Build with pixi (optional)
-
-This repository includes a `pixi.toml` workspace:
-
-```bash
-pixi run build
-pixi run test
-pixi run build-prod
-pixi run clean
-```
-
-### Production-compatible local build
-
-To reproduce the CVMFS/Apptainer plugin shape locally, use the production build
-path. It downloads and builds the same static HDF5 `1.14.3` used in the
-Apptainer recipe, then configures Hulud with `H5_USE_110_API` and the linker
-version script that hides non-plugin symbols:
-
-```bash
-pixi run build-prod
-```
-
-Built with pixi, the plugin is portable: the toolchain targets glibc 2.28, HDF5
-is linked statically without szip, and the build-machine library path (RPATH)
-is removed with `patchelf`. `scripts/check-portable.sh` runs at the end of the
-build and fails it if the plugin embeds an RPATH, needs a library other than
-`libz`/`libc`/`libm`/`libpthread`/`libdl`, or requires glibc newer than 2.28.
-
-### Releasing
-
-1. Add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`.
-2. Push a tag `vX.Y.Z`.
-
-The GitLab CI then builds and checks the plugin, uploads it to the project's
-package registry, and creates a GitLab Release whose description is that
-CHANGELOG section. The pipeline fails if the section is missing.
-
-You can also use the matching CMake preset after the static HDF5 dependency has
-been bootstrapped:
-
-```bash
-cmake --preset prod-release
-cmake --build --preset prod-release
-```
-
-### Build with conda env (optional)
-
-```bash
-conda env create -f conda_env.yml
-conda activate hulud-build
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-```
+Outputs: `build/hulud-plugin.so` and `build/benchmark`.
 
 ## XDS Usage
 
 In your `XDS.INP`, add:
 
 ```text
-LIB=/path/to/hulud/build/hulud-plugin.so
+LIB=/path/to/hulud-plugin.so
 NAME_TEMPLATE_OF_DATA_FRAMES=/data/run/image_??????.h5
 ```
 
-XDS will resolve this template to the corresponding master file
-(`..._master.h5`) and call the plugin on that master file.
-
-Hulud supports master/data layouts where the selected `NXdata` or `NXdetector`
-group exposes either:
-- `data`
-- `data_000001`, `data_000002`, ...
-
-External links and VDS-backed datasets are supported.
+XDS resolves this template to the master file (`..._master.h5`) and calls the
+plugin on it. The selected `NXdata` or `NXdetector` group must expose either
+`data` or `data_000001`, `data_000002`, ... External links and VDS-backed
+datasets are supported.
 
 ## Frame Indexing and Gaps
 
-Hulud preserves detector frame indexing semantics and supports non-contiguous frame ranges.
-
 - XDS requests frames with a 1-based `frame_number`.
-- Internally, Hulud converts to 0-based indexing before lookup.
-- For Pilatus `data_XXXXXX` blocks, if dataset attributes
-  `image_nr_low` and `image_nr_high` are present, Hulud uses them as the global frame range for that block (`low/high` are converted to 0-based).
-- If those attributes are not present, blocks are packed sequentially.
-
-This means the logical frame space can contain holes (gaps) between blocks.
-When a requested frame falls into a gap, Hulud returns a zero-filled frame
-buffer (success, not an error), matching VDS fill-value behavior.
+- For Pilatus `data_XXXXXX` blocks with `image_nr_low` / `image_nr_high`
+  attributes, Hulud uses them as the block's global frame range.
+  Without them, blocks are packed sequentially.
+- The frame space can therefore contain gaps. A frame in a gap is returned
+  zero-filled (success, not an error), matching VDS fill-value behavior.
 
 ## Public Plugin API
 
@@ -182,23 +100,14 @@ void plugin_get_data(int* frame_number, int* nx, int* ny, int* data_array,
 void plugin_close(int* error_flag);
 ```
 
-Lifecycle:
-1. `plugin_open`
-2. `plugin_get_header`
-3. `plugin_get_data` (for each frame)
-4. `plugin_close`
-
-Conventions:
+- Call order: `plugin_open`, `plugin_get_header`, `plugin_get_data` (per frame),
+  `plugin_close`.
 - `error_flag == 0` means success, negative values are errors.
-- `frame_number` in `plugin_get_data` is 1-based.
-- `nx` and `ny` in `plugin_get_data` are ABI compatibility arguments.
-  Hulud currently reads frame geometry from internal file metadata.
+- `nx` and `ny` in `plugin_get_data` are ignored; geometry comes from the file.
 
-`info[]` metadata indexes currently used by Hulud:
+`info[]` indexes:
 - `info[0]`: vendor/customer ID (`DLS_CUSTOMER_ID`, value `0x01`)
-- `info[1]`: major version
-- `info[2]`: minor version
-- `info[3]`: patch version
+- `info[1..3]`: major, minor, patch version
 - `info[4]`: version timestamp marker
 - `info[5]`: physical frame count (sum of mapped frames, optional)
 - `info[6]`: logical frame count (index span including gaps, optional)
@@ -211,10 +120,8 @@ Conventions:
 
 ## Benchmark Tool
 
-The benchmark executable can load the built plugin and run single-thread and
-multi-thread frame reads.
-
-Example:
+`benchmark` loads the plugin and times single-thread and multi-thread frame
+reads:
 
 ```bash
 ./build/benchmark /path/to/master.h5 -l ./build/hulud-plugin.so -t 16
@@ -225,15 +132,14 @@ Options:
 - `-n, --frames <N>`: limit number of frames
 - `-t, --threads <N>`: number of threads for parallel read test
 - `--no-mask`: disable masking/casting
-- `--debug`: force `HULUD_DEBUG=1`
-- `--no-debug`: force `HULUD_DEBUG=0`
+- `--debug` / `--no-debug`: force `HULUD_DEBUG=1` / `0`
 
 ### Example result
 
-This is only an example from one run; results depend on the node, the file
-system, the dataset and the cache state. It was measured on an ESRF HPC node
-reading a VDS dataset from GPFS: 2280 frames of 2073 x 2180 pixels,
-stored **Bitshuffle/LZ4 compressed** and decompressed by Hulud.
+This is only an example from one run; results depend on the machine, the file
+system, the dataset and the cache state. VDS dataset on GPFS, 2280 frames of
+2073 x 2180 pixels, stored **Bitshuffle/LZ4 compressed** and decompressed by
+Hulud:
 
 ```bash
 ./build/benchmark /path/to/master.h5 -l ./build/hulud-plugin.so --no-mask -t 16
