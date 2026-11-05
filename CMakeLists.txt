@@ -27,6 +27,8 @@ if(HULUD_PRODUCTION_PLUGIN)
         message(FATAL_ERROR "Production plugin version script not found: ${HULUD_PLUGIN_VERSION_SCRIPT}")
     endif()
     add_compile_definitions(H5_USE_110_API)
+    # Error messages use __FILE__: show repo-relative paths (src/...), not build-machine paths.
+    add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}/=")
 endif()
 
 # --- Dependencies ---
@@ -124,6 +126,18 @@ if(HULUD_PRODUCTION_PLUGIN)
             "LINKER:--version-script=${HULUD_PLUGIN_VERSION_SCRIPT}"
     )
     set_property(TARGET hulud-plugin APPEND PROPERTY LINK_DEPENDS "${HULUD_PLUGIN_VERSION_SCRIPT}")
+    # Distributed binary: never embed build-machine library paths (RPATH/RUNPATH).
+    # conda/pixi gcc (conda-gcc-specs) always adds -rpath <env>/lib at link time,
+    # so the path is removed from the linked plugin instead. System toolchains do not
+    # add it; scripts/check-portable.sh catches any RPATH that is left.
+    find_program(PATCHELF_EXECUTABLE patchelf)
+    if(PATCHELF_EXECUTABLE)
+        add_custom_command(
+            TARGET hulud-plugin POST_BUILD
+            COMMAND "${PATCHELF_EXECUTABLE}" --remove-rpath "$<TARGET_FILE:hulud-plugin>"
+            COMMENT "Removing RPATH from hulud-plugin"
+        )
+    endif()
 endif()
 target_link_libraries(
     hulud-plugin

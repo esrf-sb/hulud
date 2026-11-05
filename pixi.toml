@@ -10,7 +10,8 @@ platforms = ["linux-64"]
 c-compiler = "*"
 fortran-compiler = "*"
 make = "*"
-sysroot_linux-64 = "*"
+# Pinned: the distributed plugin must load on glibc >= 2.28 (RHEL/Rocky 8+).
+sysroot_linux-64 = "2.28.*"
 
 # Runtime / libs
 hdf5 = "*"
@@ -21,6 +22,8 @@ libgomp = "*"
 valgrind = "*"
 pkg-config = "*"
 libcurl = ">=8.18.0,<9"
+curl = "*"
+patchelf = "*"
 cmake = ">=4.2.3,<5"
 
 [tasks]

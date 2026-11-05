@@ -34,7 +34,18 @@ The original copyright notice is kept in `LICENSE` (BSD 3-Clause).
 After a build, the main outputs are:
 - `build/hulud-plugin.so` (the shared library loaded by XDS)
 - `build/benchmark` (optional benchmark/validation tool)
-- `build/libhulud_core.a` and `build/libbslz4_bundled.a` (internal static libs)
+- `build/libhulud_core.a` and `build/libbslz4_bundled.a` (internal static libs,
+  already linked into the plugin)
+
+Only `hulud-plugin.so` is needed to use Hulud with XDS.
+
+## Prebuilt Plugin
+
+Each tagged version publishes `hulud-plugin-vX.Y.Z-linux-x86_64.so` on the
+project's GitLab Releases page. It is a standalone file (HDF5 is built in) that
+runs on any x86-64 Linux with:
+- glibc >= 2.28 (RHEL/Rocky/Alma 8+, Ubuntu 20.04+, Debian 10+)
+- `libz.so.1` (zlib, present on virtually every system)
 
 ## Requirements
 
@@ -90,8 +101,23 @@ Apptainer recipe, then configures Hulud with `H5_USE_110_API` and the linker
 version script that hides non-plugin symbols:
 
 ```bash
-bash scripts/build-prod.sh
+pixi run build-prod
 ```
+
+Built with pixi, the plugin is portable: the toolchain targets glibc 2.28, HDF5
+is linked statically without szip, and the build-machine library path (RPATH)
+is removed with `patchelf`. `scripts/check-portable.sh` runs at the end of the
+build and fails it if the plugin embeds an RPATH, needs a library other than
+`libz`/`libc`/`libm`/`libpthread`/`libdl`, or requires glibc newer than 2.28.
+
+### Releasing
+
+1. Add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`.
+2. Push a tag `vX.Y.Z`.
+
+The GitLab CI then builds and checks the plugin, uploads it to the project's
+package registry, and creates a GitLab Release whose description is that
+CHANGELOG section. The pipeline fails if the section is missing.
 
 You can also use the matching CMake preset after the static HDF5 dependency has
 been bootstrapped:
