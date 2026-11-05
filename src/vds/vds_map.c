@@ -14,7 +14,7 @@
 /*
  * VDS bypass overview
  *
- * Durin wants a flat list of arithmetic frame runs that map each logical VDS frame to a
+ * Hulud wants a flat list of arithmetic frame runs that map each logical VDS frame to a
  * concrete source dataset and source frame run. This file turns the HDF5 VDS
  * metadata into that list so later readers can either:
  *   - reopen the raw files and read chunks directly, or
@@ -198,7 +198,7 @@ static void destroy_map_entries(struct FrameMapEntry* entries, size_t count) {
 /*
  * Expand an HDF5 hyperslab selection into first-dimension indices only.
  *
- * HDF5 reports the selection in full rank-N coordinates. For Durin's frame map
+ * HDF5 reports the selection in full rank-N coordinates. For Hulud's frame map
  * we only care about the frame axis, but we require every selected block to span
  * the full image in the remaining dimensions. That keeps the mapping compatible
  * with whole-frame chunk reads.
@@ -450,7 +450,7 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
 
     src_f = H5Fopen(src_full, H5F_ACC_RDONLY, H5P_DEFAULT);
     if (src_f < 0) {
-        fprintf(stderr, "[DURIN] Error: Could not open source file: %s\n", src_full);
+        fprintf(stderr, "[HULUD] Error: Could not open source file: %s\n", src_full);
         goto done;
     }
     src_d = H5Dopen2(src_f, src_dset_name, H5P_DEFAULT);
@@ -500,7 +500,7 @@ static int flatten_mapping(struct MapBuilder* b, const char* current_base_dir, h
          */
         if (!indices_are_contiguous(&s_indices) ||
             !mapping_has_constant_translation(&v_indices, &s_indices, &inner_delta)) {
-            fprintf(stderr, "[DURIN] Unsupported nested VDS mapping pattern for %s\n",
+            fprintf(stderr, "[HULUD] Unsupported nested VDS mapping pattern for %s\n",
                     src_dset_name);
             retval = -1;
         } else {

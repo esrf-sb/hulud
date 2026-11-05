@@ -76,7 +76,7 @@ void reset_error_stack() {
 
 void dump_error_stack(FILE* out) {
     int idx = stack.size;
-    if (idx > 0) fprintf(out, "Durin plugin error:\n");
+    if (idx > 0) fprintf(out, "Hulud plugin error:\n");
     while (idx-- > 0) {
         const char* file = stack.files[idx];
         const char* func = stack.funcs[idx];

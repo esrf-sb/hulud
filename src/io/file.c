@@ -14,7 +14,7 @@
 #include "core/err.h"
 #include "core/internal.h"
 
-int durin_debug_enabled = 0;
+int hulud_debug_enabled = 0;
 
 void clear_det_visit_objects(struct det_visit_objects_t* objects) {
     if (objects->nxdata > 0) {
@@ -217,14 +217,14 @@ int get_detector_info(const hid_t fid, struct ds_desc_t** desc) {
     if (objects.nxdata == 0) fprintf(stderr, "WARNING: Could not locate an NXdata entry\n");
     if (objects.nxdetector == 0) fprintf(stderr, "WARNING: Could not locate an NXdetector entry\n");
 
-    if (durin_debug_enabled) {
+    if (hulud_debug_enabled) {
         char nxdata_path[MAX_PATH_LEN] = {0};
         char nxdet_path[MAX_PATH_LEN] = {0};
         if (objects.nxdata > 0) get_object_path(objects.nxdata, nxdata_path, sizeof(nxdata_path));
         if (objects.nxdetector > 0)
             get_object_path(objects.nxdetector, nxdet_path, sizeof(nxdet_path));
 
-        fprintf(stderr, "[DURIN] detector_info: NXdata=%s NXdetector=%s\n",
+        fprintf(stderr, "[HULUD] detector_info: NXdata=%s NXdetector=%s\n",
                 nxdata_path[0] ? nxdata_path : "(none)", nxdet_path[0] ? nxdet_path : "(none)");
     }
 

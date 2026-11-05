@@ -1,19 +1,19 @@
 cmake_minimum_required(VERSION 3.15)
-project(durin C)
+project(hulud C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(
-    DURIN_PRODUCTION_PLUGIN
+    HULUD_PRODUCTION_PLUGIN
     "Build the plugin with the production-compatible ABI settings used for CVMFS deployment"
     OFF
 )
 set(
-    DURIN_PLUGIN_VERSION_SCRIPT
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/durin-plugin.map"
+    HULUD_PLUGIN_VERSION_SCRIPT
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/hulud-plugin.map"
     CACHE FILEPATH
-    "Linker version script used when DURIN_PRODUCTION_PLUGIN=ON"
+    "Linker version script used when HULUD_PRODUCTION_PLUGIN=ON"
 )
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND (NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL ""))
@@ -22,15 +22,15 @@ endif()
 
 enable_testing()
 
-if(DURIN_PRODUCTION_PLUGIN)
-    if(NOT EXISTS "${DURIN_PLUGIN_VERSION_SCRIPT}")
-        message(FATAL_ERROR "Production plugin version script not found: ${DURIN_PLUGIN_VERSION_SCRIPT}")
+if(HULUD_PRODUCTION_PLUGIN)
+    if(NOT EXISTS "${HULUD_PLUGIN_VERSION_SCRIPT}")
+        message(FATAL_ERROR "Production plugin version script not found: ${HULUD_PLUGIN_VERSION_SCRIPT}")
     endif()
     add_compile_definitions(H5_USE_110_API)
 endif()
 
 # --- Dependencies ---
-if(DURIN_PRODUCTION_PLUGIN)
+if(HULUD_PRODUCTION_PLUGIN)
     find_package(HDF5 CONFIG REQUIRED COMPONENTS C HL)
 else()
     find_package(HDF5 QUIET CONFIG COMPONENTS C HL)
@@ -41,43 +41,43 @@ endif()
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 
-set(DURIN_HDF5_LIBS)
+set(HULUD_HDF5_LIBS)
 if(TARGET HDF5::HDF5)
-    list(APPEND DURIN_HDF5_LIBS HDF5::HDF5)
+    list(APPEND HULUD_HDF5_LIBS HDF5::HDF5)
 elseif(TARGET hdf5-static)
-    list(APPEND DURIN_HDF5_LIBS hdf5-static)
+    list(APPEND HULUD_HDF5_LIBS hdf5-static)
 elseif(TARGET hdf5-shared)
-    list(APPEND DURIN_HDF5_LIBS hdf5-shared)
+    list(APPEND HULUD_HDF5_LIBS hdf5-shared)
 elseif(DEFINED HDF5_C_STATIC_LIBRARY AND HDF5_C_STATIC_LIBRARY)
-    list(APPEND DURIN_HDF5_LIBS ${HDF5_C_STATIC_LIBRARY})
+    list(APPEND HULUD_HDF5_LIBS ${HDF5_C_STATIC_LIBRARY})
 elseif(DEFINED HDF5_LIBRARIES AND HDF5_LIBRARIES)
-    list(APPEND DURIN_HDF5_LIBS ${HDF5_LIBRARIES})
+    list(APPEND HULUD_HDF5_LIBS ${HDF5_LIBRARIES})
 else()
     message(FATAL_ERROR "HDF5 C library target not found")
 endif()
 
 if(TARGET HDF5::HL)
-    list(APPEND DURIN_HDF5_LIBS HDF5::HL)
+    list(APPEND HULUD_HDF5_LIBS HDF5::HL)
 elseif(TARGET hdf5_hl-static)
-    list(APPEND DURIN_HDF5_LIBS hdf5_hl-static)
+    list(APPEND HULUD_HDF5_LIBS hdf5_hl-static)
 elseif(TARGET hdf5_hl-shared)
-    list(APPEND DURIN_HDF5_LIBS hdf5_hl-shared)
+    list(APPEND HULUD_HDF5_LIBS hdf5_hl-shared)
 elseif(DEFINED HDF5_HL_STATIC_LIBRARY AND HDF5_HL_STATIC_LIBRARY)
-    list(APPEND DURIN_HDF5_LIBS ${HDF5_HL_STATIC_LIBRARY})
+    list(APPEND HULUD_HDF5_LIBS ${HDF5_HL_STATIC_LIBRARY})
 elseif(DEFINED HDF5_HL_LIBRARIES AND HDF5_HL_LIBRARIES)
-    list(APPEND DURIN_HDF5_LIBS ${HDF5_HL_LIBRARIES})
+    list(APPEND HULUD_HDF5_LIBS ${HDF5_HL_LIBRARIES})
 else()
     message(FATAL_ERROR "HDF5 HL library target not found; required for H5DOread_chunk")
 endif()
 
 # Static HDF5 builds do not always propagate these support libraries via the
-# imported HDF5 targets, so keep them explicit on Durin targets.
-set(DURIN_HDF5_SUPPORT_LIBS ZLIB::ZLIB)
+# imported HDF5 targets, so keep them explicit on Hulud targets.
+set(HULUD_HDF5_SUPPORT_LIBS ZLIB::ZLIB)
 if(CMAKE_DL_LIBS)
-    list(APPEND DURIN_HDF5_SUPPORT_LIBS ${CMAKE_DL_LIBS})
+    list(APPEND HULUD_HDF5_SUPPORT_LIBS ${CMAKE_DL_LIBS})
 endif()
 if(NOT WIN32)
-    list(APPEND DURIN_HDF5_SUPPORT_LIBS m)
+    list(APPEND HULUD_HDF5_SUPPORT_LIBS m)
 endif()
 
 include_directories(include)
@@ -90,8 +90,8 @@ file(GLOB BSLZ4_SRCS "third_party/bslz4/src/*.c")
 add_library(bslz4_bundled STATIC ${BSLZ4_SRCS})
 target_include_directories(bslz4_bundled PUBLIC "third_party/bslz4/src")
 
-# --- 2. Durin Core Library (Static) ---
-add_library(durin_core STATIC
+# --- 2. Hulud Core Library (Static) ---
+add_library(hulud_core STATIC
     src/io/file.c
     src/io/file_descriptor.c
     src/compression/bitshuffle_lz4.c
@@ -102,35 +102,35 @@ add_library(durin_core STATIC
     src/io/readers.c
     src/core/err.c
 )
-target_link_libraries(durin_core PRIVATE ${DURIN_HDF5_LIBS} bslz4_bundled Threads::Threads)
+target_link_libraries(hulud_core PRIVATE ${HULUD_HDF5_LIBS} bslz4_bundled Threads::Threads)
 
-# --- 3. Durin XDS Plugin (Shared Library) ---
-add_library(durin-plugin SHARED
+# --- 3. Hulud XDS Plugin (Shared Library) ---
+add_library(hulud-plugin SHARED
     src/api/plugin_api.c
     src/plugin/runtime.c
 )
-# XDS expects a specific name, e.g. durin-plugin.so
-set_target_properties(durin-plugin PROPERTIES PREFIX "" OUTPUT_NAME "durin-plugin")
-if(DURIN_PRODUCTION_PLUGIN)
+# XDS expects a specific name, e.g. hulud-plugin.so
+set_target_properties(hulud-plugin PROPERTIES PREFIX "" OUTPUT_NAME "hulud-plugin")
+if(HULUD_PRODUCTION_PLUGIN)
     if(NOT UNIX OR APPLE)
-        message(FATAL_ERROR "DURIN_PRODUCTION_PLUGIN currently supports only ELF targets")
+        message(FATAL_ERROR "HULUD_PRODUCTION_PLUGIN currently supports only ELF targets")
     endif()
     if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-        message(FATAL_ERROR "DURIN_PRODUCTION_PLUGIN requires a GNU-like linker that supports --version-script")
+        message(FATAL_ERROR "HULUD_PRODUCTION_PLUGIN requires a GNU-like linker that supports --version-script")
     endif()
     target_link_options(
-        durin-plugin
+        hulud-plugin
         PRIVATE
-            "LINKER:--version-script=${DURIN_PLUGIN_VERSION_SCRIPT}"
+            "LINKER:--version-script=${HULUD_PLUGIN_VERSION_SCRIPT}"
     )
-    set_property(TARGET durin-plugin APPEND PROPERTY LINK_DEPENDS "${DURIN_PLUGIN_VERSION_SCRIPT}")
+    set_property(TARGET hulud-plugin APPEND PROPERTY LINK_DEPENDS "${HULUD_PLUGIN_VERSION_SCRIPT}")
 endif()
 target_link_libraries(
-    durin-plugin
+    hulud-plugin
     PRIVATE
-        durin_core
-        ${DURIN_HDF5_LIBS}
-        ${DURIN_HDF5_SUPPORT_LIBS}
+        hulud_core
+        ${HULUD_HDF5_LIBS}
+        ${HULUD_HDF5_SUPPORT_LIBS}
         Threads::Threads
 )
 
@@ -144,15 +144,15 @@ add_executable(test_vds_image_numbers test/test_vds_image_numbers.c)
 target_link_libraries(
     test_vds_image_numbers
     PRIVATE
-        durin-plugin
-        ${DURIN_HDF5_LIBS}
-        ${DURIN_HDF5_SUPPORT_LIBS}
+        hulud-plugin
+        ${HULUD_HDF5_LIBS}
+        ${HULUD_HDF5_SUPPORT_LIBS}
 )
 add_test(NAME test_vds_image_numbers COMMAND test_vds_image_numbers)
 
 # --- Installation (Optional but good practice) ---
 install(
-    TARGETS durin-plugin
+    TARGETS hulud-plugin
     LIBRARY DESTINATION lib
 )
 

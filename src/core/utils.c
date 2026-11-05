@@ -29,8 +29,8 @@ int link_is_dataset(hid_t loc, const char* name) {
     get_object_path(loc, gpath, sizeof(gpath));
     H5E_BEGIN_TRY { d = H5Dopen2(loc, name, H5P_DEFAULT); }
     H5E_END_TRY;
-    if (durin_debug_enabled) {
-        fprintf(stderr, "[DURIN] link_is_dataset: %s/%s => %s\n", gpath[0] ? gpath : "(root)", name,
+    if (hulud_debug_enabled) {
+        fprintf(stderr, "[HULUD] link_is_dataset: %s/%s => %s\n", gpath[0] ? gpath : "(root)", name,
                 (d >= 0 ? "dataset" : "missing"));
     }
     if (d < 0) return 0;

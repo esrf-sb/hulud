@@ -13,10 +13,10 @@ CMAKE_BIN="${CMAKE_BIN:-cmake}"
 
 "${CMAKE_BIN}" -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DDURIN_PRODUCTION_PLUGIN=ON \
+    -DHULUD_PRODUCTION_PLUGIN=ON \
     -DHDF5_DIR="${HDF5_DIR}" \
     "$@"
 
 "${CMAKE_BIN}" --build "${BUILD_DIR}" -j"${JOBS}"
 
-echo "Production-compatible plugin available at ${BUILD_DIR}/durin-plugin.so"
+echo "Production-compatible plugin available at ${BUILD_DIR}/hulud-plugin.so"

@@ -1,17 +1,17 @@
-#ifndef DURIN_INTERNAL_H
-#define DURIN_INTERNAL_H
+#ifndef HULUD_INTERNAL_H
+#define HULUD_INTERNAL_H
 
 #include <hdf5.h>
 
 #include "io/file.h"
 
 /* Global debug flag */
-extern int durin_debug_enabled;
+extern int hulud_debug_enabled;
 
 #define DEBUGF(fmt, ...)                                    \
     do {                                                    \
-        if (durin_debug_enabled) {                          \
-            fprintf(stderr, "[DURIN] " fmt, ##__VA_ARGS__); \
+        if (hulud_debug_enabled) {                          \
+            fprintf(stderr, "[HULUD] " fmt, ##__VA_ARGS__); \
         }                                                   \
     } while (0)
 
@@ -49,4 +49,4 @@ int get_dectris_pilatus_pixel_mask(const struct ds_desc_t* desc, int* buffer);
 int build_direct_chunk_map(hid_t data_group_id, struct pilatus_ds_desc_t* base,
                            struct opt_pilatus_ds_desc_t* opt);
 
-#endif /* DURIN_INTERNAL_H */
+#endif /* HULUD_INTERNAL_H */

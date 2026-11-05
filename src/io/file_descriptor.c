@@ -248,7 +248,7 @@ static int create_virtual_pilatus_descriptor(hid_t data_group_id, struct ds_desc
     }
 
     if (build_parallel_index(opt_desc) < 0) {
-        fprintf(stderr, "[DURIN] VDS fast-path unavailable: using serialized HDF5 fallback\n");
+        fprintf(stderr, "[HULUD] VDS fast-path unavailable: using serialized HDF5 fallback\n");
         *output_desc = (struct ds_desc_t*)opt_desc;
         (*output_desc)->get_data_frame = &get_virtual_frame;
         return 0;
@@ -361,7 +361,7 @@ static int create_descriptor_from_plan(const struct descriptor_build_plan_t* pla
     }
 
     if (is_virtual) {
-        fprintf(stderr, "[DURIN] VDS detected: attempting fast-path optimization\n");
+        fprintf(stderr, "[HULUD] VDS detected: attempting fast-path optimization\n");
         if (create_virtual_pilatus_descriptor(plan->data_group_id, output_desc) < 0) {
             return -3;
         }

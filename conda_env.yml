@@ -1,4 +1,4 @@
-name: durin-build
+name: hulud-build
 channels:
   - conda-forge
 dependencies:

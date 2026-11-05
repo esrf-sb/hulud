@@ -1,8 +1,9 @@
 # Changelog
 
-All notable changes to the Durin VDS project will be documented in this file.
+All notable changes to the Hulud project (formerly Durin VDS) will be documented in this file.
 
 ## [Unreleased]
+- **Breaking** - Project renamed from Durin to Hulud. The plugin is now `hulud-plugin.so` (update `LIB=` in `XDS.INP`), the public header moved to `include/hulud/plugin_api.h`, and the environment variables are now `HULUD_DEBUG`, `HULUD_DISABLE_MASKING` and `HULUD_PLUGIN_FASTPATH`.
 - **Tool** - Strengthened `benchmark`'s per-frame verification from a plain additive sum to an FNV-1a 64-bit hash seeded with the requested frame index, so a swapped/mismatched frame changes the result instead of being masked by commutative addition.
 
 ## [1.4.6] - 2026-08-19

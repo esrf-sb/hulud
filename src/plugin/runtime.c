@@ -5,7 +5,7 @@
 
 #include "plugin/runtime.h"
 
-#include <durin/plugin_api.h>
+#include <hulud/plugin_api.h>
 #include <fenv.h>
 #include <hdf5.h>
 #include <limits.h>
@@ -19,7 +19,7 @@
 
 #define ERROR_OUTPUT stderr
 
-typedef char durin_requires_32bit_int[(sizeof(int) == sizeof(int32_t)) ? 1 : -1];
+typedef char hulud_requires_32bit_int[(sizeof(int) == sizeof(int32_t)) ? 1 : -1];
 
 static hid_t file_id = 0;
 static struct ds_desc_t* data_desc = NULL;
@@ -28,7 +28,7 @@ static int fast_path = 0;
 static pthread_mutex_t plugin_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int h5_atexit_configured = 0;
 static int apply_mask_and_cast = 1;
-extern int durin_debug_enabled;
+extern int hulud_debug_enabled;
 // True only when the selected reader does not touch the HDF5 API (parallel fast-path)
 static int data_reader_thread_safe = 0;
 
@@ -86,7 +86,7 @@ static void* get_thread_tmp_buffer(size_t needed) {
 
 static int env_truthy(const char* v) { return v && v[0] != '0' && v[0] != '\0'; }
 
-static void fill_info_array(int info[DURIN_PLUGIN_INFO_SIZE]) {
+static void fill_info_array(int info[HULUD_PLUGIN_INFO_SIZE]) {
     info[0] = DLS_CUSTOMER_ID;
     info[1] = VERSION_MAJOR;
     info[2] = VERSION_MINOR;
@@ -174,7 +174,7 @@ extern "C" {
  * Fills version info, configures HDF5 error handling, and builds the detector
  * descriptor (including optional pixel mask).
  */
-void durin_plugin_runtime_open(const char* filename, int info[DURIN_PLUGIN_INFO_SIZE],
+void hulud_plugin_runtime_open(const char* filename, int info[HULUD_PLUGIN_INFO_SIZE],
                                int* error_flag) {
     struct fp_env_guard fp_guard = fp_env_guard_begin();
     int retval = 0;
@@ -197,16 +197,16 @@ void durin_plugin_runtime_open(const char* filename, int info[DURIN_PLUGIN_INFO_
     }
 
     fill_info_array(info);
-    const char* fp = getenv("DURIN_PLUGIN_FASTPATH");
+    const char* fp = getenv("HULUD_PLUGIN_FASTPATH");
     fast_path = env_truthy(fp);
 
     /* Enable verbose debug logging if requested */
-    durin_debug_enabled = env_truthy(getenv("DURIN_DEBUG"));
-    if (durin_debug_enabled) {
-        fprintf(stderr, "[DURIN] Debug logging enabled\n");
+    hulud_debug_enabled = env_truthy(getenv("HULUD_DEBUG"));
+    if (hulud_debug_enabled) {
+        fprintf(stderr, "[HULUD] Debug logging enabled\n");
     }
 
-    const char* disable_mask_env = getenv("DURIN_DISABLE_MASKING");
+    const char* disable_mask_env = getenv("HULUD_DISABLE_MASKING");
     apply_mask_and_cast = !env_truthy(disable_mask_env);
 
     file_id = H5Fopen(filename, H5F_ACC_RDONLY, H5P_DEFAULT);
@@ -257,8 +257,8 @@ done:
 /**
  * Retrieve detector geometry and frame count from the open descriptor.
  */
-void durin_plugin_runtime_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
-                                     int* number_of_frames, int info[DURIN_PLUGIN_INFO_SIZE],
+void hulud_plugin_runtime_get_header(int* nx, int* ny, int* nbytes, float* qx, float* qy,
+                                     int* number_of_frames, int info[HULUD_PLUGIN_INFO_SIZE],
                                      int* error_flag) {
     struct fp_env_guard fp_guard = fp_env_guard_begin();
     int err = 0;
@@ -309,8 +309,8 @@ done:
  * Read a frame (1-based index) into the caller-provided buffer.
  * Uses the fast path when possible; otherwise protects HDF5 calls with a mutex.
  */
-void durin_plugin_runtime_get_data(int* frame_number, int* nx, int* ny, int* data_array,
-                                   int info[DURIN_PLUGIN_INFO_SIZE], int* error_flag) {
+void hulud_plugin_runtime_get_data(int* frame_number, int* nx, int* ny, int* data_array,
+                                   int info[HULUD_PLUGIN_INFO_SIZE], int* error_flag) {
     struct fp_env_guard fp_guard = fp_env_guard_begin();
     int retval = 0;
     int frame_size_px = data_desc->dims[1] * data_desc->dims[2];
@@ -366,7 +366,7 @@ done:
 /**
  * Close all plugin resources and release HDF5 handles.
  */
-void durin_plugin_runtime_close(int* error_flag) {
+void hulud_plugin_runtime_close(int* error_flag) {
     struct fp_env_guard fp_guard = fp_env_guard_begin();
     pthread_mutex_lock(&plugin_mutex);
     data_reader_thread_safe = 0;
