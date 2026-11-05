@@ -13,3 +13,6 @@ build-*/
 .pixi/*
 !.pixi/config.toml
 .envrc
+
+# Editor settings
+.vscode/
