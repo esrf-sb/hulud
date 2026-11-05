@@ -1,6 +1,6 @@
 [workspace]
 name = "durin"
-version = "1.4.4"
+version = "1.4.6"
 authors = ["Ludovic Broche <ludovic.broche@esrf.fr>"]
 channels = ["conda-forge"]
 platforms = ["linux-64"]
