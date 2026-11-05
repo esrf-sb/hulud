@@ -16,3 +16,4 @@ build-*/
 
 # Editor settings
 .vscode/
+.codex
