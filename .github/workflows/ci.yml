@@ -1,40 +1,73 @@
 # Releasing:
-#   1. Add a "## [X.Y.Z] - YYYY-MM-DD" section to CHANGELOG.md.
-#   2. Push a tag vX.Y.Z that includes this workflow.
-# The tag workflow builds and checks the plugin, then creates a GitHub Release
-# with the matching changelog section and the plugin archive attached.
+#   1. Set the same version in pixi.toml, the newest versioned CHANGELOG.md
+#      section and include/hulud/plugin_api.h, then merge into main.
+#   2. In Actions > CI > Run workflow, select main.
+# The manual run checks the version, builds and tests the plugin, then tags
+# the tested commit and publishes the release notes and both plugin archives.
+# Pushes and pull requests only build and test; Unreleased notes are allowed.
 
 name: CI
 
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_dispatch:
+
+# Serialize manual releases without cancelling one already in progress.
+# Normal CI runs each get their own group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'release' || github.run_id }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Require main for manual releases
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "Run the release workflow from main." >&2
+            exit 1
+          fi
+
+      - name: Check out release source and tags
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check release versions
+        if: github.event_name == 'workflow_dispatch'
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          RELEASE_TAG=$(python3 scripts/check-release.py)
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     runs-on: ubuntu-24.04
     container: ghcr.io/prefix-dev/pixi:0.75.0
     defaults:
       run:
         shell: bash
-    outputs:
-      release_tag: ${{ steps.release-tag.outputs.tag }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
-
-      # Only tags matching the original GitLab release rules publish a release.
-      - name: Identify release tag
-        id: release-tag
-        run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Cache pixi environment and static HDF5
         uses: actions/cache@v6
@@ -58,18 +91,20 @@ jobs:
             build-prod/benchmark
 
   release:
-    needs: build
-    if: needs.build.outputs.release_tag != ''
+    needs: [prepare, build]
+    if: github.event_name == 'workflow_dispatch' && needs.prepare.outputs.release_tag != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
-      RELEASE_NAME: hulud-${{ needs.build.outputs.release_tag }}-linux-x86_64
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      RELEASE_NAME: hulud-${{ needs.prepare.outputs.release_tag }}-linux-x86_64
     steps:
       - name: Check out source
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Download build artifacts
@@ -78,14 +113,11 @@ jobs:
           name: hulud-linux-x86_64
           path: build-prod/
 
-      - name: Prepare release notes
-        run: |
-          VERSION="${RELEASE_TAG#v}"
-          awk -v v="$VERSION" '/^## \[/ { p = index($0, "## [" v "]") == 1; next } p' CHANGELOG.md > release_notes.md
-          if [ ! -s release_notes.md ]; then
-            echo "CHANGELOG.md has no section '## [$VERSION]'" >&2
-            exit 1
-          fi
+      - name: Recheck release versions and prepare notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/check-release.py
 
       - name: Package plugin and licenses
         run: |
@@ -94,11 +126,14 @@ jobs:
           tar -czf "$RELEASE_NAME.tar.gz" "$RELEASE_NAME"
           cp "$RELEASE_NAME.tar.gz" hulud-linux-x86_64.tar.gz
 
-      - name: Publish GitHub Release
+      - name: Tag tested commit and publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          gh api "repos/$GH_REPO/git/refs" --method POST \
+            -f "ref=refs/tags/$RELEASE_TAG" \
+            -f "sha=$GITHUB_SHA"
           gh release create "$RELEASE_TAG" "$RELEASE_NAME.tar.gz" hulud-linux-x86_64.tar.gz \
             --verify-tag \
             --title "Hulud $RELEASE_TAG" \
