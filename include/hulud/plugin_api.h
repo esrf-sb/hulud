@@ -44,11 +44,11 @@ enum {
     HULUD_PLUGIN_INFO_LOGICAL_FRAMES = 6,
 };
 
-#define DLS_CUSTOMER_ID 0x01 /* pretend we're Dectris, otherwise XDS doesn't work */
+#define DLS_CUSTOMER_ID 0x01 /* Vendor identifier retained for XDS compatibility. */
 #define VERSION_MAJOR 2
 #define VERSION_MINOR 0
 #define VERSION_PATCH 1
-#define VERSION_TIMESTAMP -1 /* good enough for Dectris apparantely */
+#define VERSION_TIMESTAMP -1 /* Compatibility timestamp marker. */
 
 /** Function pointer signature for `plugin_open` (typically used with `dlsym`). */
 typedef void (*plugin_open_fn)(const char* filename, int info[HULUD_PLUGIN_INFO_SIZE],

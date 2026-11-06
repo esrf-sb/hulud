@@ -4,12 +4,14 @@ Hulud
 **[Download the latest Linux x86-64 plugin](https://github.com/esrf-sb/hulud/releases/latest/download/hulud-linux-x86_64.tar.gz)**
 
 Hulud is an XDS plugin for reading detector data from HDF5 files
-(NeXus and Dectris/Pilatus layouts).
+(NeXus and Dectris/Pilatus layouts). It implements the XDS/Neggia-compatible
+detector plugin ABI.
 
 ## Why Hulud
 
 Hulud is built for fast, parallel CPU reading of HDF5 Virtual Datasets (VDS),
-such as those written by Lima2:
+such as those written by [Lima2](https://limagroup.gitlab-pages.esrf.fr/lima2/),
+ESRF's framework for high-performance 2D detector acquisition:
 
 - **Native VDS support**, including nested, strided, gapped and compact
   mappings, resolved once at open time instead of on every frame.
@@ -20,19 +22,33 @@ such as those written by Lima2:
 - **Safe fallback**: when the fast path does not apply, Hulud falls back to
   standard (serialized) HDF5 reads.
 
+Hulud selects the compatible reader automatically when opening the file;
+no environment variable is needed to enable the parallel fast path.
+
 ## Origin
 
 Hulud is derived from [durin](https://github.com/DiamondLightSource/durin)
 by Diamond Light Source, and has since been extensively reworked at the ESRF.
-The original copyright notice is kept in `LICENSE` (BSD 3-Clause).
+
+License: **[BSD 3-Clause](LICENSE)**. Copyright notices for Diamond Light
+Source and ESRF are kept in `LICENSE`.
 Licenses of the bundled HDF5, Bitshuffle and LZ4 code are in
 `THIRD_PARTY_NOTICES`.
 
+## Support
+
+Report bugs and request features through
+[GitHub Issues](https://github.com/esrf-sb/hulud/issues).
+
 ## Prebuilt Plugin
 
-Each release provides `hulud-vX.Y.Z-linux-x86_64.tar.gz`, containing
-`hulud-plugin.so`, `LICENSE` and `THIRD_PARTY_NOTICES`. The plugin is a
-standalone file (HDF5 is built in) that runs on any x86-64 Linux with:
+Each release provides two identical archives:
+
+- `hulud-vX.Y.Z-linux-x86_64.tar.gz`, named for the release version.
+- `hulud-linux-x86_64.tar.gz`, used by the latest-download link above.
+
+Both contain `hulud-plugin.so`, `LICENSE` and `THIRD_PARTY_NOTICES`. The plugin
+is a standalone file (HDF5 is built in) that runs on any x86-64 Linux with:
 - glibc >= 2.28 (RHEL/Rocky/Alma 8+, Ubuntu 20.04+, Debian 10+)
 - `libz.so.1` (zlib)
 
@@ -66,9 +82,20 @@ Or with pixi: `pixi run build`, `pixi run test`.
 
 Outputs: `build/hulud-plugin.so` and `build/benchmark`.
 
+### Tests
+
+`pixi run test` builds the development targets and runs CTest. Currently,
+CTest registers one regression test, `test_vds_image_numbers`. It checks
+nested VDS mappings with irregular frame selections, global frame numbering,
+zero-filled gaps, geometry, and physical and logical frame counts using
+small uncompressed 8-bit datasets.
+
+The Fortran test programs in `test/` are not built or registered with CTest.
+
 ## XDS Usage
 
-In your `XDS.INP`, add:
+The `LIB=` setting in `XDS.INP` tells XDS which shared library to load for
+detector image reads. Add:
 
 ```text
 LIB=/path/to/hulud-plugin.so
@@ -117,8 +144,10 @@ void plugin_close(int* error_flag);
 ## Runtime Environment Variables
 
 - `HULUD_DEBUG=1` enables verbose debug logging.
-- `HULUD_DISABLE_MASKING=1` disables pixel masking/casting.
-- `HULUD_PLUGIN_FASTPATH=1` enables fast-path behavior when compatible.
+- `HULUD_DISABLE_MASKING=1` disables detector pixel masking. By default,
+  Hulud applies the detector pixel mask before returning frames to XDS,
+  replacing masked pixels with `-1` or `-2` according to the mask bits.
+  Conversion to the plugin ABI's 32-bit integer pixels still applies.
 
 ## Benchmark Tool
 
@@ -133,13 +162,15 @@ Options:
 - `-l, --lib <path>`: plugin shared library path
 - `-n, --frames <N>`: limit number of frames
 - `-t, --threads <N>`: number of threads for parallel read test
-- `--no-mask`: disable masking/casting
+- `--no-mask`: disable detector pixel masking
 - `--debug` / `--no-debug`: force `HULUD_DEBUG=1` / `0`
 
 ### Example result
 
 This is only an example from one run; results depend on the machine, the file
-system, the dataset and the cache state. VDS dataset on GPFS, 2280 frames of
+system, the dataset and the cache state. CPU, node configuration, GPFS
+configuration and cache state are not specified for this example, so it is
+not a reproducible performance comparison. VDS dataset on GPFS, 2280 frames of
 2073 x 2180 pixels, stored **Bitshuffle/LZ4 compressed** and decompressed by
 Hulud:
 
